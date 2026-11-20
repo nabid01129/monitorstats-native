@@ -1,0 +1,24 @@
+name: Native Windows build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build x64 native app
+        shell: powershell
+        run: ./build.ps1
+      - name: Validate themes, scaling, settings and version checks
+        shell: powershell
+        run: ./validate.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MonitorStats-Native-x64
+          path: |
+            build/MonitorStats Native.exe
+            build/MonitorStats Native.exe.config
