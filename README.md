@@ -4,7 +4,7 @@ This separate Windows edition uses Windows Forms and in-process C# collectors. T
 
 ## Install and use
 
-Run **MonitorStats-Native-Setup-1.0.5-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
+Run **MonitorStats-Native-Setup-1.0.12-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
 
 In Settings, choose the widget monitor, game monitor, placement, scaling, theme, polling interval, and OLED shifting interval. Configure your ONU address and credentials in the Network tab to enable optical power. Credentials are encrypted for your Windows account.
 
@@ -49,3 +49,7 @@ Licensed under MIT. Bug reports and pull requests are welcome. Include Windows v
 ## Updates and privacy
 
 Native updates come only from [MonitorStats Native releases](https://github.com/nabid01129/monitorstats-native/releases). This is independent of MonitorStats Widget. Update checks contact GitHub; public IP and DNS identification contact external IP/geolocation services. ONU credentials stay encrypted in your Windows account. Do not include your local settings folder in a contribution.
+
+## Wireless battery compatibility
+
+Device detection is automatic across earbuds, headsets, speakers, keyboards, mice and controllers when Windows or a supported receiver exposes battery data. Bluetooth connection status is checked separately from stored battery values, so paired but disconnected devices are omitted. Battery values normally refresh every five minutes. XInput may supply a coarse level instead of a percentage. Proprietary receivers that do not expose a supported battery protocol cannot be measured universally; they require a device-specific reader. An attached dongle alone is not proof that its wireless device is connected.

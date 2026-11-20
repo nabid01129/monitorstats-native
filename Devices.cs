@@ -59,6 +59,56 @@ namespace MonitorStatsNative {
         }
     }
     internal static class BluetoothState {
+        [StructLayout(LayoutKind.Sequential)]struct PropertyKey {public Guid Format;public uint Id;}
+        [StructLayout(LayoutKind.Sequential)]struct CompositeKey {public PropertyKey Key;public uint Store;public IntPtr Locale;}
+        [StructLayout(LayoutKind.Sequential)]struct Property {public CompositeKey Key;public uint Type,Size;public IntPtr Buffer;}
+        [StructLayout(LayoutKind.Sequential)]struct DeviceObject {public int Type;public IntPtr Id;public uint Count;public IntPtr Properties;}
+        [DllImport("cfgmgr32.dll")]static extern int DevGetObjects(int type,uint flags,uint requested,[In]CompositeKey[] keys,uint filters,IntPtr filter,out uint count,out IntPtr objects);
+        [DllImport("cfgmgr32.dll")]static extern void DevFreeObjects(uint count,IntPtr objects);
+        static void Containers(HashSet<string> connected){
+            uint count=0;IntPtr objects=IntPtr.Zero;
+            try{
+                var key=new CompositeKey{Key=new PropertyKey{Format=new Guid("78c34fc8-104a-4aca-9ea4-524d52996e57"),Id=55}};
+                if(DevGetObjects(2,0,1,new[]{key},0,IntPtr.Zero,out count,out objects)!=0)return;
+                int stride=Marshal.SizeOf(typeof(DeviceObject));
+                for(int i=0;i<count;i++){
+                    var device=(DeviceObject)Marshal.PtrToStructure(IntPtr.Add(objects,i*stride),typeof(DeviceObject));
+                    if(device.Count==0||device.Properties==IntPtr.Zero)continue;
+                    var value=(Property)Marshal.PtrToStructure(device.Properties,typeof(Property));
+                    if(value.Type==0x11&&value.Size>=1&&value.Buffer!=IntPtr.Zero&&Marshal.ReadByte(value.Buffer)!=0){
+                        string id=Marshal.PtrToStringUni(device.Id);if(!String.IsNullOrEmpty(id))connected.Add(id.Trim('{','}'));
+                    }
+                }
+            }catch{}finally{if(objects!=IntPtr.Zero)DevFreeObjects(count,objects);}
+        }
+        [StructLayout(LayoutKind.Sequential)]struct Search {public int Size;public int Authenticated,Remembered,Unknown,Connected,Inquiry;public byte Timeout;public IntPtr Radio;}
+        [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]struct Remote {
+            public int Size;public ulong Address;public uint Class;
+            [MarshalAs(UnmanagedType.Bool)]public bool Connected;
+            [MarshalAs(UnmanagedType.Bool)]public bool Remembered;
+            [MarshalAs(UnmanagedType.Bool)]public bool Authenticated;
+            [MarshalAs(UnmanagedType.ByValArray,SizeConst=16)]public byte[] LastSeen;
+            [MarshalAs(UnmanagedType.ByValArray,SizeConst=16)]public byte[] LastUsed;
+            [MarshalAs(UnmanagedType.ByValTStr,SizeConst=248)]public string Name;
+        }
+        [DllImport("BluetoothApis.dll",CharSet=CharSet.Unicode)]static extern IntPtr BluetoothFindFirstDevice(ref Search search,ref Remote device);
+        [DllImport("BluetoothApis.dll",CharSet=CharSet.Unicode)]static extern bool BluetoothFindNextDevice(IntPtr find,ref Remote device);
+        [DllImport("BluetoothApis.dll")]static extern bool BluetoothFindDeviceClose(IntPtr find);
+        static string NameKey(string name){return "name:"+System.Text.RegularExpressions.Regex.Replace(name??"",@"[^\p{L}\p{N}]","").ToLowerInvariant();}
+        internal static bool IsConnected(MonitorStatsPeripheralBatteryReading device,HashSet<string> connected){
+            return !device.IsBluetoothDevice||connected.Contains(device.ContainerId??"")||connected.Contains(NameKey(device.Name));
+        }
+        static void Classic(HashSet<string> connected){
+            IntPtr find=IntPtr.Zero;
+            try{
+                var search=new Search{Size=Marshal.SizeOf(typeof(Search)),Connected=1};
+                var device=new Remote{Size=Marshal.SizeOf(typeof(Remote))};
+                find=BluetoothFindFirstDevice(ref search,ref device);
+                if(find==IntPtr.Zero)return;
+                do{if(device.Connected&&!String.IsNullOrWhiteSpace(device.Name))connected.Add(NameKey(device.Name));}
+                while(BluetoothFindNextDevice(find,ref device));
+            }catch{}finally{if(find!=IntPtr.Zero)BluetoothFindDeviceClose(find);}
+        }
         [StructLayout(LayoutKind.Sequential)]struct DeviceInterface {public int Size;public Guid Class;public int Flags;public IntPtr Reserved;}
         [DllImport("setupapi.dll",EntryPoint="SetupDiGetClassDevsW",CharSet=CharSet.Unicode)]static extern IntPtr Devices(ref Guid guid,string enumerator,IntPtr parent,uint flags);
         [DllImport("setupapi.dll")]static extern bool SetupDiEnumDeviceInterfaces(IntPtr set,IntPtr device,ref Guid guid,uint index,ref DeviceInterface data);
@@ -99,7 +149,7 @@ namespace MonitorStatsNative {
                     object remaining=report.GetType().GetProperty("RemainingCapacityInMilliwattHours").GetValue(report,null),full=report.GetType().GetProperty("FullChargeCapacityInMilliwattHours").GetValue(report,null);
                     if(remaining==null||full==null||Convert.ToDouble(full)<=0)continue;
                     int percent=(int)Math.Round(100*Convert.ToDouble(remaining)/Convert.ToDouble(full));if(percent<0||percent>100)continue;
-                    var properties=info.GetProperty("Properties").GetValue(device,null) as IDictionary<string,object>;
+                    var properties=info.GetProperty("Properties").GetValue(device,null) as IReadOnlyDictionary<string,object>;
                     object container=null;if(properties!=null)properties.TryGetValue("System.Devices.ContainerId",out container);
                     string category=Query.Match(name,"tws|earbud|earphone|haylou|airpods")?"Earbuds":Query.Match(name,"headset|headphone|speaker|audio")?"Audio":Query.Match(name,"mouse")?"Mouse":Query.Match(name,"keyboard")?"Keyboard":Query.Match(name,"gamepad|controller|xbox|joystick")?"Controller":"Wireless device";
                     readings.Add(new MonitorStatsPeripheralBatteryReading{Name=name,ContainerId=container==null?null:Convert.ToString(container).Trim('{','}'),IsBluetoothDevice=Query.Match(id,"BTHENUM|BTHLEDEVICE|BTHLE"),Category=category,BatteryPercent=percent,Detail="Windows battery controller report"});
@@ -108,31 +158,8 @@ namespace MonitorStatsNative {
             return readings.ToArray();
         }
         public static HashSet<string> Read() {
-            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try {
-                var info = Type.GetType("Windows.Devices.Enumeration.DeviceInformation, Windows, ContentType=WindowsRuntime");
-                var kind = Type.GetType("Windows.Devices.Enumeration.DeviceInformationKind, Windows, ContentType=WindowsRuntime");
-                if (info == null || kind == null) return result;
-                var find = info.GetMethods().First(m => m.Name == "FindAllAsync" && m.GetParameters().Length == 3 && m.GetParameters()[2].ParameterType == kind);
-                var extensions = Assembly.LoadFrom(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "System.Runtime.WindowsRuntime.dll")).GetType("System.WindowsRuntimeSystemExtensions");
-                var asTask = extensions.GetMethods().First(m => m.Name == "AsTask" && m.IsGenericMethod && m.GetParameters().Length == 1);
-                foreach (string name in new[] { "BluetoothDevice", "BluetoothLEDevice" }) {
-                    var bt = Type.GetType("Windows.Devices.Bluetooth." + name + ", Windows, ContentType=WindowsRuntime");
-                    if (bt == null) continue;
-                    string selector = (string)bt.GetMethods().First(m => m.Name == "GetDeviceSelector" && m.GetParameters().Length == 0).Invoke(null, null);
-                    var props = new List<string> { "System.Devices.Aep.IsConnected", "System.Devices.Aep.ContainerId" };
-                    object op = find.Invoke(null, new object[] { selector, props, Enum.Parse(kind, "AssociationEndpoint") });
-                    var task = (Task)asTask.MakeGenericMethod(find.ReturnType.GetGenericArguments()[0]).Invoke(null, new[] { op });
-                    if (!task.Wait(2000)) continue;
-                    var rows = (IEnumerable)task.GetType().GetProperty("Result").GetValue(task, null);
-                    foreach (object row in rows) {
-                        var values = row.GetType().GetProperty("Properties").GetValue(row, null) as IDictionary<string, object>;
-                        if (values == null) continue;
-                        object online, id;
-                        if (values.TryGetValue("System.Devices.Aep.IsConnected", out online) && Convert.ToBoolean(online) && values.TryGetValue("System.Devices.Aep.ContainerId", out id)) result.Add(Convert.ToString(id).Trim('{','}'));
-                    }
-                }
-            } catch { }
+            var result=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Containers(result);Classic(result);
             return result;
         }
     }

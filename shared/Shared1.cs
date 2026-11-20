@@ -205,6 +205,8 @@ public static class MonitorStatsPeripheralBattery {
     g3Online = null;
     g3Percent = null;
     g3DisplayedPercent = null;
+    g3LastStatus = DateTime.MinValue;
+    g3RefreshAt = DateTime.MinValue;
     g3NextQuery = DateTime.MinValue;
   }
 
@@ -297,25 +299,12 @@ public static class MonitorStatsPeripheralBattery {
         // pending input read captures the response while the request completes.
         bool confirmed = RequestG3Status(g3Stream.SafeFileHandle);
         if (confirmed) g3Identified = true;
-        g3NextQuery = now.AddSeconds(confirmed && g3Percent.HasValue ? 300 : 30);
+        g3NextQuery = now.AddSeconds(confirmed && g3Percent.HasValue ? 300 : 5);
       }
       for (int i = 0; i < 32 && g3Read.IsCompleted; i++) {
         int count = g3Read.GetAwaiter().GetResult();
         if (count == 0) { CloseG3(); return null; }
-        if (g3Identified && count == G3InputLength && g3Packet[0] == 9 && g3Packet[1] == 0x0A) {
-          int value = g3Packet[3];
-          if (g3Packet[2] == 2 && value <= 1) {
-            g3LastStatus = now;
-            g3Online = value == 1;
-            if (value == 0) { g3Percent = null; g3DisplayedPercent = null; }
-            else if (!g3Percent.HasValue) g3NextQuery = now;
-          } else if (g3Packet[2] == 5 && value <= 100 && g3Online != false) {
-            g3LastStatus = now;
-            g3Online = true;
-            g3Percent = value;
-            g3NextQuery = now.AddMinutes(5);
-          }
-        }
+        ApplyG3Report(g3Packet, count, now);
         g3Read = g3Stream.ReadAsync(g3Packet, 0, g3Packet.Length);
       }
       if (g3Online != true) return null;
@@ -335,6 +324,25 @@ public static class MonitorStatsPeripheralBattery {
     } catch (IOException) { CloseG3(); }
       catch (UnauthorizedAccessException) { CloseG3(); }
     return null;
+  }
+
+  private static void ApplyG3Report(byte[] report, int count, DateTime now) {
+        if (g3Identified && count == G3InputLength && report != null && report.Length >= count && report[0] == 9 && report[1] == 0x0A) {
+          int value = report[3];
+          if (report[2] == 2 && value <= 1) {
+            g3LastStatus = now;
+            g3Online = value == 1;
+            if (value == 0) { g3Percent = null; g3DisplayedPercent = null; }
+            else if (!g3Percent.HasValue) g3NextQuery = now;
+          } else if (report[2] == 5 && value <= 100) {
+            // A fresh battery response proves the radio is online even if
+            // the separate reconnect notification was missed.
+            g3LastStatus = now;
+            g3Online = true;
+            g3Percent = value;
+            g3NextQuery = now.AddMinutes(5);
+          }
+        }
   }
 
   public static MonitorStatsPeripheralBatteryReading[] Read(bool scanWindowsDevices) {

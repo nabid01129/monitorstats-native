@@ -53,10 +53,12 @@ class Checks {
                         foreach(int scale in new[]{70,100,130}){
                             optionsType.GetField("Scale").SetValue(options,scale);
                             canvas.DrawToBitmap(scaled,new Rectangle(Point.Empty,size));
+                            foreach(string scrollField in new[]{"leftScrollMax","rightScrollMax"})if((int)canvasType.GetField(scrollField,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)!=0)throw new Exception("Layout requires scrolling");
                         }
                         if(size.Width==768){
                             optionsType.GetField("Scale").SetValue(options,100);
                             canvas.DrawToBitmap(scaled,new Rectangle(Point.Empty,size));
+                            foreach(string scrollField in new[]{"leftScrollMax","rightScrollMax"})if((int)canvasType.GetField(scrollField,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)!=0)throw new Exception("Layout requires scrolling");
                             int maximum=(int)canvasType.GetField("rightScrollMax",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas);
                             if(maximum>0)throw new Exception("Portrait layout clips ordinary four-drive inventory");
                             scaled.Save("fullblack-preview.png",System.Drawing.Imaging.ImageFormat.Png);
@@ -64,7 +66,32 @@ class Checks {
                     }
                 }
                 if(((IDictionary)canvasType.GetField("fonts",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)).Count>180)throw new Exception("Font cache grows without limit");
-                Console.WriteLine("Full Black and portrait/landscape scaling passed");
+                canvas.Size=new Size(768,1318);
+                optionsType.GetField("Scale").SetValue(options,100);
+                canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
+                var fontMethod=canvasType.GetMethod("FontFor",BindingFlags.Instance|BindingFlags.NonPublic);
+                float normalFont=((Font)fontMethod.Invoke(canvas,new object[]{12f,false,true})).Size;
+                optionsType.GetField("Scale").SetValue(options,120);
+                canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
+                float zoomFont=((Font)fontMethod.Invoke(canvas,new object[]{12f,false,true})).Size;
+                bitmap.Save("text-120-preview.png",System.Drawing.Imaging.ImageFormat.Png);
+                if(zoomFont<normalFont*1.15)throw new Exception("Text scale does not enlarge fonts");
+                Console.WriteLine("Full Black, portrait/landscape scaling and visible 120% zoom passed");
+                var originalStats=canvasType.GetField("Stats").GetValue(canvas);
+                string firstOrder=null;
+                foreach(bool reverse in new[]{false,true}){
+                    object mouse=data(new object[]{"name","Mouse","category","Mouse","batteryPercent",75});
+                    object earbuds=data(new object[]{"name","Earbuds","category","Earbuds","batteryPercent",90});
+                    canvasType.GetField("Stats").SetValue(canvas,data(new object[]{"batteries",reverse?new[]{earbuds,mouse}:new[]{mouse,earbuds}}));
+                    var built=(Array)canvasType.GetMethod("Build",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(canvas,null);
+                    object system=((IEnumerable)built.GetValue(0)).Cast<object>().First();
+                    var ordered=new System.Collections.Generic.List<string>();
+                    foreach(var row in (IEnumerable)system.GetType().GetField("Rows").GetValue(system))foreach(object line in (IEnumerable)row){string icon=(string)line.GetType().GetField("Icon").GetValue(line);if(icon!=null)ordered.Add(icon);}
+                    string order=String.Join("|",ordered);
+                    if(firstOrder==null)firstOrder=order;else if(firstOrder!=order)throw new Exception("Battery icons change position when discovery order changes");
+                }
+                canvasType.GetField("Stats").SetValue(canvas,originalStats);
+                Console.WriteLine("Battery icon order stays stable across shuffled discovery results");
                 canvas.Size=bitmap.Size;
                 optionsType.GetField("Scale").SetValue(options,100);
                 for(int shift=0;shift<9;shift++){
@@ -138,9 +165,54 @@ class Checks {
                 if((string)optionsType.GetField("Theme").GetValue(saved)!="fullblack")throw new Exception("Full Black choice does not persist");
             }
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.10"}))throw new Exception("Numeric update comparison failed");
-            Console.WriteLine("Settings layout and native update comparison passed");
+            foreach(string tag in new[]{"v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.13"}))throw new Exception("Numeric update comparison failed");
+            var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
+            var binding=BindingFlags.Instance|BindingFlags.NonPublic;
+            using(var service=(IDisposable)Activator.CreateInstance(serviceType,new[]{options})){
+                var deadline=DateTime.UtcNow.AddMinutes(20);
+                serviceType.GetField("opticalNext",binding).SetValue(service,deadline);
+                serviceType.GetField("details",binding).SetValue(service,data(new object[]{"rxOpticalPowerDbm",-25.0,"opticalUpdatedAt","test","opticalStale",true}));
+                var changed=optionsType.GetMethod("Clone").Invoke(options,null);
+                optionsType.GetField("Theme").SetValue(changed,"classic");
+                serviceType.GetMethod("Configure").Invoke(service,new[]{changed});
+                if((DateTime)serviceType.GetField("opticalNext",binding).GetValue(service)!=deadline)throw new Exception("Appearance changes restart ONU polling");
+                optionsType.GetField("Username").SetValue(changed,"changed-test-account");
+                serviceType.GetMethod("Configure").Invoke(service,new[]{changed});
+                var snapshot=serviceType.GetMethod("Snapshot").Invoke(service,null);
+                if(dataType.GetMethod("Get").Invoke(snapshot,new object[]{"rxOpticalPowerDbm"})!=null)throw new Exception("Changed ONU credentials retain old readings");
+            }
+            var batteryType=assembly.GetType("MonitorStatsPeripheralBattery",true);
+            var batteryFlags=BindingFlags.Static|BindingFlags.NonPublic;
+            var apply=batteryType.GetMethod("ApplyG3Report",batteryFlags);
+            batteryType.GetField("g3Identified",batteryFlags).SetValue(null,true);
+            var stamp=DateTime.UtcNow;
+            apply.Invoke(null,new object[]{new byte[]{9,10,2,0,0,0,0,0},8,stamp});
+            if((bool?)batteryType.GetField("g3Online",batteryFlags).GetValue(null)!=false)throw new Exception("Mouse disconnect ignored");
+            apply.Invoke(null,new object[]{new byte[]{9,10,5,76,0,0,0,0},8,stamp});
+            if((bool?)batteryType.GetField("g3Online",batteryFlags).GetValue(null)!=true||(int?)batteryType.GetField("g3Percent",batteryFlags).GetValue(null)!=76)throw new Exception("Fresh battery cannot restore connection");
+            apply.Invoke(null,new object[]{new byte[]{9,10,5,255,0,0,0,0},8,stamp});
+            if((int?)batteryType.GetField("g3Percent",batteryFlags).GetValue(null)!=76)throw new Exception("Invalid battery percentage accepted");
+            batteryType.GetMethod("CloseG3",batteryFlags).Invoke(null,null);
+            var readingType=assembly.GetType("MonitorStatsPeripheralBatteryReading",true);
+            var connectedCheck=assembly.GetType("MonitorStatsNative.BluetoothState",true).GetMethod("IsConnected",BindingFlags.Static|BindingFlags.NonPublic);
+            foreach(string category in new[]{"Earbuds","Keyboard","Audio","Controller","Mouse","Wireless device"}){
+                var reading=Activator.CreateInstance(readingType);
+                readingType.GetProperty("Name").SetValue(reading,"Example "+category,null);
+                readingType.GetProperty("Category").SetValue(reading,category,null);
+                readingType.GetProperty("IsBluetoothDevice").SetValue(reading,true,null);
+                readingType.GetProperty("ContainerId").SetValue(reading,"test-container",null);
+                var online=new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase){"test-container"};
+                if(!(bool)connectedCheck.Invoke(null,new object[]{reading,online}))throw new Exception("Connected generic device omitted: "+category);
+                online.Clear();
+                if((bool)connectedCheck.Invoke(null,new object[]{reading,online}))throw new Exception("Disconnected generic device retained: "+category);
+            }
+            var bluetooth=assembly.GetType("MonitorStatsNative.BluetoothState",true);
+            int compositeSize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("CompositeKey",BindingFlags.NonPublic));
+            int propertySize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("Property",BindingFlags.NonPublic));
+            int objectSize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("DeviceObject",BindingFlags.NonPublic));
+            if(compositeSize!=(IntPtr.Size==8?32:28)||propertySize!=(IntPtr.Size==8?48:40)||objectSize!=(IntPtr.Size==8?32:16))throw new Exception("Windows device connection structures have incorrect alignment");
+            Console.WriteLine("Settings, battery reconnect, generic devices and native connection layouts passed");
             return 0;
         }catch(Exception error){Console.Error.WriteLine(error);return 1;}
     }

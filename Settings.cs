@@ -21,7 +21,7 @@ namespace MonitorStatsNative {
             release.Text=String.IsNullOrEmpty(latest)?"GitHub update check unavailable":"Latest GitHub release "+latest;release.AutoSize=true;
             Add(general,"Updates",release);
             var update=new Button{Text="Check GitHub updates",AutoSize=true};
-            update.Click+=async(s,e)=>{update.Enabled=false;release.Text="Checking…";string tag=await System.Threading.Tasks.Task.Run(()=>Services.CheckUpdate());if(!IsDisposed){release.Text=tag.Length>0?"Latest GitHub release "+tag:"Update check unavailable";update.Enabled=true;Process.Start(Releases);}};
+            update.Click+=async(s,e)=>{update.Enabled=false;release.Text="Checking…";string tag=await System.Threading.Tasks.Task.Run(()=>Services.CheckUpdate());if(!IsDisposed){release.Text=tag.Length>0?"Latest GitHub release "+tag:"Update check unavailable";update.Enabled=true;try{Process.Start(Releases);}catch(Exception error){MessageBox.Show(this,error.Message,"Could not open GitHub");}}};
             Add(general,"",update);
             Select(general,"Theme","theme",Theme.All.Select(t=>t.Id).ToArray(),Value.Theme);
             Select(general,"Hardware polling","poll",new[]{"1000","2000","3000","5000","10000"},Value.Poll.ToString());

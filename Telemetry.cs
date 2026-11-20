@@ -17,6 +17,7 @@ namespace MonitorStatsNative {
         readonly Dictionary<string, Data> identities = new Dictionary<string, Data>();
         Data memory = new Data(), cpu = new Data(), gpu = new Data(), board = new Data();
         List<Data> volumes = new List<Data>(), peripherals = new List<Data>(), batteries = new List<Data>();
+        MonitorStatsPeripheralBatteryReading[] windowsBatteries=new MonitorStatsPeripheralBatteryReading[0];
         ProcessSnapshot processes = new ProcessSnapshot();
         NetworkInterface adapter;
         long received, sent, sampled;
@@ -42,21 +43,24 @@ namespace MonitorStatsNative {
             if (Due("storage", 30)) Storage();
             if (Due("process", 5)) processes = MonitorStatsMemory.ReadProcesses();
             bool changed = MonitorStatsPeripheralBattery.ConsumeDeviceChange();
-            bool presence = Due("presence", 30) || changed, batteryRefresh = Due("battery", 300);
-            var fresh = MonitorStatsPeripheralBattery.Read(presence || batteryRefresh);
+
+            bool presence = Due("presence", 5) || changed, batteryRefresh = Due("battery", 300);
+            bool discover=batteryRefresh||changed||Due("batteryInventory",30);
+            var fresh = MonitorStatsPeripheralBattery.Read(discover);
+            if(discover)windowsBatteries=fresh.Where(b=>!DynamicBattery(b)).Concat(BluetoothState.Controllers()).ToArray();
+            fresh=fresh.Where(DynamicBattery).Concat(windowsBatteries).GroupBy(b=>String.IsNullOrEmpty(b.ContainerId)?b.Name:b.ContainerId,StringComparer.OrdinalIgnoreCase).Select(g=>g.First()).ToArray();
             if (presence || batteryRefresh) {
-                fresh=fresh.Concat(BluetoothState.Controllers()).GroupBy(b=>b.ContainerId??b.Name,StringComparer.OrdinalIgnoreCase).Select(g=>g.First()).ToArray();
                 var connected = BluetoothState.Read();
                 var updated = new List<Data>();
                 foreach (var item in fresh) {
-                    if (item.IsBluetoothDevice && !connected.Contains(item.ContainerId ?? "")) continue;
+                    if (!BluetoothState.IsConnected(item,connected)) continue;
                     var old = batteries.FirstOrDefault(b => b.Text("name") == item.Name);
                     updated.Add(!batteryRefresh && old != null && item.Detail != "MCHOSE G3 2.4 GHz receiver" ? old : Battery(item));
                 }
                 batteries = updated;
             } else {
                 batteries.RemoveAll(b => b.Text("detail") == "MCHOSE G3 2.4 GHz receiver" || b.Text("detail").StartsWith("Windows controller level"));
-                batteries.AddRange(fresh.Select(Battery));
+                batteries.AddRange(fresh.Where(DynamicBattery).Select(Battery));
             }
             var sensors = Sensors();
             var cpuNow = cpu.Copy(); var gpuNow = gpu.Copy();
@@ -118,6 +122,7 @@ namespace MonitorStatsNative {
             if (power != null) { result["systemPowerW"] = power.Number("value"); result["systemPowerKind"] = Query.Match(power.Text("name"), "whole|system total|total system") ? "whole-system" : Query.Match(power.Text("name"), "ac input|wall") ? "pc-input" : "pc-output"; }
             return result;
         }
+        static bool DynamicBattery(MonitorStatsPeripheralBatteryReading b){return b.Detail=="MCHOSE G3 2.4 GHz receiver"||(b.Detail??"").StartsWith("Windows controller level");}
         static Data Battery(MonitorStatsPeripheralBatteryReading b) {
             return Data.Of("name", b.Name, "category", b.Category, "batteryPercent", b.BatteryPercent, "batteryLevel", b.BatteryLevel, "detail", b.Detail);
         }

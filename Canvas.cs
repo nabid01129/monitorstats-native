@@ -34,6 +34,7 @@ namespace MonitorStatsNative {
         readonly Queue<double?> frames=new Queue<double?>();
         readonly Dictionary<string,Font> fonts=new Dictionary<string,Font>();
         string fontFamily;
+        float textZoom=1f;
         readonly string windowsVersion;
         Rectangle hideButton;
         Rectangle clockRegion;
@@ -63,10 +64,11 @@ namespace MonitorStatsNative {
         public void RecordFrame(double? ms){frames.Enqueue(ms);while(frames.Count>90)frames.Dequeue();}
         public void RefreshClock(){if(clockRegion.IsEmpty)Invalidate();else Invalidate(clockRegion);}
         void ClearFonts(){foreach(var font in fonts.Values)font.Dispose();fonts.Clear();}
-        Font FontFor(float size,bool bold=false){
+        Font FontFor(float size,bool bold=false,bool applyZoom=true){
             var theme=Theme.Find(Options.Theme);
             if(fontFamily!=theme.Family){ClearFonts();fontFamily=theme.Family;}
-            size=Math.Max(6,(float)Math.Round(size*4)/4);
+            if(applyZoom)size*=textZoom;
+            size=Math.Max(1,(float)Math.Round(size*4)/4);
             string key=size.ToString(System.Globalization.CultureInfo.InvariantCulture)+(bold?"b":"r");Font fnt;
             if(!fonts.TryGetValue(key,out fnt)){fnt=new Font(theme.Family,size,bold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Pixel);fonts[key]=fnt;}
             return fnt;
@@ -80,7 +82,7 @@ namespace MonitorStatsNative {
             var system=new Card("System"){Clock=true};
             system.Add(Text(DateTime.Now.ToString("h:mm:ss tt"),true),Text(windowsVersion));
             system.Add(Text(DateTime.Now.ToString("dddd, MMM d, yyyy")));
-            var batteries=Stats.Rows("batteries").Select(b=>new Line("",b.Number("batteryPercent").HasValue?Query.Format(b.Number("batteryPercent"),"%",0):b.Text("batteryLevel")=="Connected"?"—":b.Text("batteryLevel"),true){Icon=b.Text("category")}).ToArray();
+            var batteries=Stats.Rows("batteries").OrderBy(b=>b.Text("category"),StringComparer.OrdinalIgnoreCase).ThenBy(b=>b.Text("name"),StringComparer.OrdinalIgnoreCase).Select(b=>new Line("",b.Number("batteryPercent").HasValue?Query.Format(b.Number("batteryPercent"),"%",0):b.Text("batteryLevel")=="Connected"?"—":b.Text("batteryLevel"),true){Icon=b.Text("category")}).ToArray();
             for(int i=0;i<batteries.Length;i+=4)system.Add(batteries.Skip(i).Take(4).ToArray());
             left.Add(system);
             if(Options.Fps){
@@ -154,8 +156,10 @@ namespace MonitorStatsNative {
             }
             var columns=cachedColumns;
             float user=Options.Scale/100f;
-            float scale=Options.AutoScale?Math.Min(ClientSize.Width/768f,ClientSize.Height/1366f)*user:user;
-            scale=Math.Max(0.45f,Math.Min(2f,scale));
+            textZoom=user;
+            float monitorScale=Options.AutoScale?Math.Min(ClientSize.Width/768f,ClientSize.Height/1366f):1f;
+            monitorScale=Math.Max(0.45f,Math.Min(2f,monitorScale));
+            float scale=monitorScale;
             float width=ClientSize.Width/scale,height=ClientSize.Height/scale;
             g.ScaleTransform(scale,scale);
             int dx=(Shift%3-1)*2,dy=(Shift/3-1)*2;g.TranslateTransform(dx,dy);
@@ -163,10 +167,9 @@ namespace MonitorStatsNative {
             clockRegion=Rectangle.Empty;hideButton=Rectangle.Empty;
             for(int c=0;c<2;c++){
                 float total=columns[c].Sum(card=>card.Height);
-                float fit=Math.Min(1,(height-50-columns[c].Count*10)/total);
-                // Keep long lists readable and use wheel scrolling when needed.
-                fit=Math.Max(Options.AutoScale?0.65f:0.8f,fit);
-                int maximum=(int)Math.Ceiling(Math.Max(0,columns[c].Sum(card=>card.Height*fit+10)-(height-50)-0.01f));
+                // Fit cards within the monitor; the user scale adjusts text independently.
+                float fit=Math.Max(0.001f,Math.Min(1,(height-50-columns[c].Count*10)/total));
+                int maximum=0;
                 if(c==0){leftScrollMax=maximum;leftScroll=Math.Min(leftScroll,maximum);}else{rightScrollMax=maximum;rightScroll=Math.Min(rightScroll,maximum);}
                 float x=12+c*(columnWidth+12),y=40-(c==0?leftScroll:rightScroll);
                 foreach(var card in columns[c]){
@@ -254,9 +257,9 @@ namespace MonitorStatsNative {
             if(String.IsNullOrEmpty(value)||box.Width<=0||box.Height<=0)return;
             using(var brush=new SolidBrush(color))using(var format=new StringFormat { Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap }) {
                 // IPv6 scales down within its full-width row.
-                if((fit||value.Count(c=>c==':')>3)&&g.MeasureString(value,font).Width>box.Width){
-                    g.DrawString(value,FontFor(Math.Max(7,font.Size*box.Width/g.MeasureString(value,font).Width*0.94f),font.Bold),brush,box,format);
-                }else g.DrawString(value,font,brush,box,format);
+                SizeF measured=g.MeasureString(value,font);
+                float shrink=Math.Min(1,Math.Min(box.Width/Math.Max(1,measured.Width)*0.98f,box.Height/Math.Max(1,font.GetHeight(g))));
+                g.DrawString(value,shrink<1?FontFor(font.Size*shrink,font.Bold,false):font,brush,box,format);
             }
         }
         static void DrawBar(Graphics g,RectangleF box,double percent,Theme theme){
@@ -264,7 +267,6 @@ namespace MonitorStatsNative {
             using(var brush=new SolidBrush(theme.Accent))g.FillRectangle(brush,box.X,box.Y,box.Width*(float)Math.Max(0,Math.Min(100,percent))/100,box.Height);
         }
         protected override void OnMouseDown(MouseEventArgs e){base.OnMouseDown(e);if(hideButton.Contains(e.Location)){showIps=!showIps;var h=HideIpsChanged;if(h!=null)h();Invalidate();}}
-        protected override void OnMouseWheel(MouseEventArgs e){base.OnMouseWheel(e);if(e.X<ClientSize.Width/2)leftScroll=Math.Max(0,Math.Min(leftScrollMax,leftScroll-e.Delta/4));else rightScroll=Math.Max(0,Math.Min(rightScrollMax,rightScroll-e.Delta/4));Invalidate();}
         protected override void Dispose(bool disposing){if(disposing)foreach(var font in fonts.Values)font.Dispose();base.Dispose(disposing);}
     }
 }

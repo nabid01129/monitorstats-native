@@ -27,8 +27,9 @@ namespace MonitorStatsNative {
         public Data Snapshot() { lock (gate) return details.Copy(); }
         public void Configure(Options value) {
             lock (gate) {
+                if(options.Endpoint==value.Endpoint&&options.Username==value.Username&&options.Password==value.Password)return;
                 generation++;
-                if(options.Endpoint!=value.Endpoint){details.Remove("rxOpticalPowerDbm");details.Remove("opticalUpdatedAt");}
+                details.Remove("rxOpticalPowerDbm");details.Remove("opticalUpdatedAt");details.Remove("opticalStale");
                 options = value.Clone(); opticalNext = DateTime.MinValue; next = DateTime.MinValue;
             }
         }

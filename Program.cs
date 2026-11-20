@@ -14,7 +14,7 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr FindWindow(string className,string title);
         [DllImport("user32.dll")]static extern bool ShowWindow(IntPtr window,int command);
         [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
-        public const string Version = "1.0.5";
+        public const string Version = "1.0.12";
         [STAThread] static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;
             SetProcessDPIAware();
@@ -157,9 +157,9 @@ namespace MonitorStatsNative {
                     if(!closing)BeginInvoke((Action)(()=>{if(GC.GetTotalMemory(false)>4*1048576)GC.Collect(2,GCCollectionMode.Forced,false);}));
                 }
                 if(result!=DialogResult.OK)return;
+                try{dialog.Value.Save();}catch(Exception error){MessageBox.Show(this,error.Message,"Settings could not be saved");return;}
                 options=dialog.Value;
-                try{options.Save();}catch(Exception error){MessageBox.Show(this,error.Message,"Settings could not be saved");}
-                services.Configure(options);Interlocked.Exchange(ref refreshRequested,1);ApplyLayout();
+                services.Configure(options);ApplyLayout();
             }
         }
         void Collect(object state) {
