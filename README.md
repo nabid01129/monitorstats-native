@@ -4,7 +4,7 @@ This separate Windows edition uses Windows Forms and in-process C# collectors. T
 
 ## Install and use
 
-Run **MonitorStats-Native-Setup-1.0.12-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
+Run **MonitorStats-Native-Setup-1.0.14-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
 
 In Settings, choose the widget monitor, game monitor, placement, scaling, theme, polling interval, and OLED shifting interval. Configure your ONU address and credentials in the Network tab to enable optical power. Credentials are encrypted for your Windows account.
 
@@ -53,3 +53,7 @@ Native updates come only from [MonitorStats Native releases](https://github.com/
 ## Wireless battery compatibility
 
 Device detection is automatic across earbuds, headsets, speakers, keyboards, mice and controllers when Windows or a supported receiver exposes battery data. Bluetooth connection status is checked separately from stored battery values, so paired but disconnected devices are omitted. Battery values normally refresh every five minutes. XInput may supply a coarse level instead of a percentage. Proprietary receivers that do not expose a supported battery protocol cannot be measured universally; they require a device-specific reader. An attached dongle alone is not proof that its wireless device is connected.
+
+## Update intervals
+
+1000 ms means a one-second target for CPU, GPU, RAM and adapter traffic. A value need not change every sample, and the source software may update its own sensors less often. Processes refresh every five seconds, drive health every 30 seconds, battery values every five minutes and public IP/DNS/optical information normally every 30 minutes (with connection-change and retry handling). Slow wireless battery requests run separately from the fast hardware poller, inside the same process.

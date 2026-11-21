@@ -19,6 +19,7 @@ namespace MonitorStatsNative {
         public Line(string caption,string text,bool strong=false,Color? color=null){Caption=caption;Text=text;Strong=strong;Color=color;}
     }
     internal sealed class Card {
+        public Line ClockText,DateText,GameText,FpsText;
         public string Title;public List<Line[]> Rows=new List<Line[]>();public double? Bar;public double[] Cores;public double[] CoreTemps;public bool Graph,Clock;
         public Card(string title){Title=title;}
         public Card Add(params Line[] lines){var present=lines.Where(l=>!String.IsNullOrEmpty(l.Text)).ToArray();if(present.Length>0)Rows.Add(present);return this;}
@@ -80,15 +81,18 @@ namespace MonitorStatsNative {
             var left=new List<Card>();var right=new List<Card>();var cpu=Stats.Section("cpu");var gpu=Stats.Section("gpu");var ram=Stats.Section("ram");var net=Stats.Section("network").Copy();
             foreach(var pair in Extras)net[pair.Key]=pair.Value;
             var system=new Card("System"){Clock=true};
-            system.Add(Text(DateTime.Now.ToString("h:mm:ss tt"),true),Text(windowsVersion));
-            system.Add(Text(DateTime.Now.ToString("dddd, MMM d, yyyy")));
+            system.ClockText=Text(DateTime.Now.ToString("h:mm:ss tt"),true);
+            system.DateText=Text(DateTime.Now.ToString("dddd, MMM d, yyyy"));
+            system.Add(system.ClockText,Text(windowsVersion));
+            system.Add(system.DateText);
             var batteries=Stats.Rows("batteries").OrderBy(b=>b.Text("category"),StringComparer.OrdinalIgnoreCase).ThenBy(b=>b.Text("name"),StringComparer.OrdinalIgnoreCase).Select(b=>new Line("",b.Number("batteryPercent").HasValue?Query.Format(b.Number("batteryPercent"),"%",0):b.Text("batteryLevel")=="Connected"?"—":b.Text("batteryLevel"),true){Icon=b.Text("category")}).ToArray();
             for(int i=0;i<batteries.Length;i+=4)system.Add(batteries.Skip(i).Take(4).ToArray());
             left.Add(system);
             if(Options.Fps){
                 var fps=new Card("Game frame rate · Monitor "+Options.GameMonitor){Graph=true};
-                fps.Add(Text(Game??"Waiting for game frames from RTSS"));
-                fps.Add(Text(Fps.HasValue?Query.Format(Fps," FPS",0):"— FPS",true));left.Add(fps);
+                fps.GameText=Text(GameLabel());
+                fps.FpsText=Text(Fps.HasValue?Query.Format(Fps," FPS",0):"— FPS",true);
+                fps.Add(fps.GameText);fps.Add(fps.FpsText);left.Add(fps);
             }
             var processor=new Card("Processor"){Bar=cpu.Number("loadPercent")};
             processor.Add(Text(Options.Name("cpu",cpu.Text("model")),true));
@@ -142,6 +146,7 @@ namespace MonitorStatsNative {
             right.Add(network);
             return new[]{left,right};
         }
+        string GameLabel(){return !String.IsNullOrWhiteSpace(Game)?Game:Fps.HasValue?"Game process unavailable":"Waiting for game frames from RTSS";}
         protected override void OnPaint(PaintEventArgs e) {
             base.OnPaint(e);
             var g=e.Graphics;var theme=Theme.Find(Options.Theme);using(var background=new SolidBrush(theme.Background))g.FillRectangle(background,e.ClipRectangle);g.SmoothingMode=SmoothingMode.AntiAlias;
@@ -150,9 +155,9 @@ namespace MonitorStatsNative {
                 cachedColumns=Build();cachedStats=Stats;cachedExtras=Extras;cachedPower=Power;cachedOptions=Options;cachedShowIps=showIps;
             }else{
                 var system=cachedColumns[0][0];
-                system.Rows[0][0].Text=DateTime.Now.ToString("h:mm:ss tt");system.Rows[1][0].Text=DateTime.Now.ToString("dddd, MMM d, yyyy");
+                system.ClockText.Text=DateTime.Now.ToString("h:mm:ss tt");system.DateText.Text=DateTime.Now.ToString("dddd, MMM d, yyyy");
                 var fps=cachedColumns[0].FirstOrDefault(card=>card.Graph);
-                if(fps!=null){fps.Rows[0][0].Text=Game??"Waiting for game frames from RTSS";fps.Rows[1][0].Text=Fps.HasValue?Query.Format(Fps," FPS",0):"— FPS";}
+                if(fps!=null){fps.GameText.Text=GameLabel();fps.FpsText.Text=Fps.HasValue?Query.Format(Fps," FPS",0):"— FPS";}
             }
             var columns=cachedColumns;
             float user=Options.Scale/100f;

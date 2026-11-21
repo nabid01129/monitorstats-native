@@ -24,7 +24,9 @@ namespace MonitorStatsNative {
             update.Click+=async(s,e)=>{update.Enabled=false;release.Text="Checking…";string tag=await System.Threading.Tasks.Task.Run(()=>Services.CheckUpdate());if(!IsDisposed){release.Text=tag.Length>0?"Latest GitHub release "+tag:"Update check unavailable";update.Enabled=true;try{Process.Start(Releases);}catch(Exception error){MessageBox.Show(this,error.Message,"Could not open GitHub");}}};
             Add(general,"",update);
             Select(general,"Theme","theme",Theme.All.Select(t=>t.Id).ToArray(),Value.Theme);
-            Select(general,"Hardware polling","poll",new[]{"1000","2000","3000","5000","10000"},Value.Poll.ToString());
+            Select(general,"Hardware update interval (milliseconds)","poll",new[]{"1000","2000","3000","5000","10000"},Value.Poll.ToString());
+            var polling=(ComboBox)inputs["poll"];polling.FormattingEnabled=true;polling.Format+=(s,e)=>{int ms;if(Int32.TryParse(Convert.ToString(e.ListItem),out ms))e.Value=(ms/1000)+" second"+(ms==1000?"":"s")+" ("+ms+" ms)";};
+            Add(general,"",new Label{AutoSize=true,Text="Applies to CPU, GPU, RAM and network traffic. Processes refresh every 5 seconds; drive health every 30 seconds; battery levels every 5 minutes. Clock updates independently every second."});
             Select(general,"OLED shift interval (minutes)","shift",new[]{"1","2","5","10","15","30","60"},(Value.Shift/60000).ToString());
             Check(general,"Start with Windows","startup",Value.Startup);Check(general,"Show game frame rate","fps",Value.Fps);Check(general,"Show CPU thread bars","cores",Value.Cores);
             var screens=NativeDisplay.Screens();
@@ -90,7 +92,7 @@ namespace MonitorStatsNative {
         void Save(){
             string endpoint=Str("endpoint").Trim();Uri address;
             if(endpoint.Length>0&&(!Uri.TryCreate(endpoint,UriKind.Absolute,out address)||address.Scheme!="http"||!Services.Private(address.Host))){MessageBox.Show(this,"Enter the ONU’s private IPv4 HTTP address.");return;}
-            Value.Theme=Convert.ToString(((ComboBox)inputs["theme"]).SelectedItem);Value.Poll=Int32.Parse(Str("poll"));Value.Shift=Int32.Parse(Str("shift"))*60000;
+            Value.Theme=Convert.ToString(((ComboBox)inputs["theme"]).SelectedItem);Value.Poll=Int32.Parse(Convert.ToString(((ComboBox)inputs["poll"]).SelectedItem));Value.Shift=Int32.Parse(Str("shift"))*60000;
             Value.Startup=Bool("startup");Value.Fps=Bool("fps");Value.Cores=Bool("cores");Value.Fill=Bool("fill");Value.AutoScale=Bool("auto");
             Value.Display=((Choice)((ComboBox)inputs["display"]).SelectedItem).Id;Value.GameMonitor=Int32.Parse(((Choice)((ComboBox)inputs["game"]).SelectedItem).Id);
             Value.Position=Str("position");Value.Width=Num("width");Value.Height=Num("height");Value.Scale=Num("scale");Value.Unit=Str("unit");

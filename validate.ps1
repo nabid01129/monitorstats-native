@@ -29,6 +29,22 @@ class Checks {
             using(var canvas=(Control)Activator.CreateInstance(canvasType,BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public,null,new[]{options},null))
             using(var bitmap=new Bitmap(768,1280)) {
                 canvas.Size=bitmap.Size;canvas.CreateControl();
+                var paint=canvasType.GetMethod("OnPaint",BindingFlags.Instance|BindingFlags.NonPublic);
+                foreach(string game in new[]{"", " ", null, "ExampleGame"}){
+                    canvasType.GetField("Game").SetValue(canvas,game);
+                    canvasType.GetField("Fps").SetValue(canvas,(double?)60);
+                    canvasType.GetField("Stats").SetValue(canvas,Activator.CreateInstance(dataType));
+                    for(int repaint=0;repaint<4;repaint++)using(var g=Graphics.FromImage(bitmap))using(var args=new PaintEventArgs(g,new Rectangle(Point.Empty,bitmap.Size)))paint.Invoke(canvas,new object[]{args});
+                }
+                canvasType.GetField("Game").SetValue(canvas,null);canvasType.GetField("Fps").SetValue(canvas,null);
+                                for(int frame=0;frame<200;frame++){
+                    canvasType.GetField("Game").SetValue(canvas,frame%3==0?"":frame%3==1?null:"ExampleGame");
+                    canvasType.GetField("Fps").SetValue(canvas,frame%4==0?null:(object)60.0);
+                    if(frame%7==0)canvasType.GetField("Stats").SetValue(canvas,Activator.CreateInstance(dataType));
+                    using(var g=Graphics.FromImage(bitmap))using(var args=new PaintEventArgs(g,new Rectangle(Point.Empty,bitmap.Size)))paint.Invoke(canvas,new object[]{args});
+                }
+                canvasType.GetField("Game").SetValue(canvas,null);canvasType.GetField("Fps").SetValue(canvas,null);
+                Console.WriteLine("200 repeated paints across game exit, missing name and telemetry transitions passed");
                 int themes=0;
                 foreach(object theme in (IEnumerable)assembly.GetType("MonitorStatsNative.Theme",true).GetField("All").GetValue(null)){
                     optionsType.GetField("Theme").SetValue(options,theme.GetType().GetField("Id").GetValue(theme));
@@ -154,7 +170,7 @@ class Checks {
                     themeChoice.SelectedItem=theme.GetType().GetField("Id").GetValue(theme);
                     if(settings.BackColor.ToArgb()!=SystemColors.Control.ToArgb()||themeChoice.BackColor.ToArgb()!=SystemColors.Window.ToArgb())throw new Exception("Dashboard theme changes settings colors");
                 }
-                themeChoice.SelectedItem="fullblack";
+                themeChoice.SelectedItem="fullblack"; ((ComboBox)controls["poll"]).SelectedItem="1000";
                 settings.Show(); Application.DoEvents();
                 var tabs=settings.Controls.OfType<TabControl>().First(); tabs.SelectedIndex=4; Application.DoEvents();
                 var componentBox=tabs.TabPages[4].Controls[0].Controls.OfType<TextBox>().Single(c=>c.Name=="PowerComponents");
@@ -162,11 +178,12 @@ class Checks {
                 settings.Hide();
                 settings.GetType().GetMethod("Save",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(settings,null);
                 var saved=settings.GetType().GetField("Value").GetValue(settings);
+                if((int)optionsType.GetField("Poll").GetValue(saved)!=1000)throw new Exception("Formatted polling choice does not save its millisecond value");
                 if((string)optionsType.GetField("Theme").GetValue(saved)!="fullblack")throw new Exception("Full Black choice does not persist");
             }
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.13"}))throw new Exception("Numeric update comparison failed");
+            foreach(string tag in new[]{"v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.15"}))throw new Exception("Numeric update comparison failed");
             var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
             var binding=BindingFlags.Instance|BindingFlags.NonPublic;
             using(var service=(IDisposable)Activator.CreateInstance(serviceType,new[]{options})){
@@ -212,6 +229,26 @@ class Checks {
             int propertySize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("Property",BindingFlags.NonPublic));
             int objectSize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("DeviceObject",BindingFlags.NonPublic));
             if(compositeSize!=(IntPtr.Size==8?32:28)||propertySize!=(IntPtr.Size==8?48:40)||objectSize!=(IntPtr.Size==8?32:16))throw new Exception("Windows device connection structures have incorrect alignment");
+            var pollingDeadline=assembly.GetType("MonitorStatsNative.Dashboard",true).GetMethod("NextDeadline",BindingFlags.Static|BindingFlags.NonPublic);
+            foreach(var scenario in new[]{new long[]{0,0,1000},new long[]{1000,1000,2000},new long[]{1000,3500,4000},new long[]{4000,3600,4000}})
+                if((long)pollingDeadline.Invoke(null,new object[]{scenario[0],scenario[1],1000})!=scenario[2])throw new Exception("Polling deadline drifts or replays missed ticks");
+            var asyncType=assembly.GetType("MonitorStatsNative.AsyncSnapshot`1",true).MakeGenericType(typeof(string));
+            using(var entered=new System.Threading.ManualResetEvent(false))using(var gate=new System.Threading.ManualResetEvent(false))using(var released=new System.Threading.ManualResetEvent(false)){
+                int calls=0,cleanups=0;
+                Func<string> read=()=>{System.Threading.Interlocked.Increment(ref calls);entered.Set();gate.WaitOne(5000);return "fresh";};
+                Action cleanup=()=>{System.Threading.Interlocked.Increment(ref cleanups);released.Set();};
+                var provider=(IDisposable)Activator.CreateInstance(asyncType,new object[]{"initial",read,cleanup});
+                try{
+                    var watch=System.Diagnostics.Stopwatch.StartNew();asyncType.GetMethod("Request").Invoke(provider,null);watch.Stop();
+                    if(watch.ElapsedMilliseconds>500||!entered.WaitOne(2000))throw new Exception("Slow provider blocks the polling caller");
+                    for(int i=0;i<10;i++)asyncType.GetMethod("Request").Invoke(provider,null);
+                    if(calls!=1||(string)asyncType.GetProperty("Value").GetValue(provider,null)!="initial")throw new Exception("Provider requests overlap or snapshot is unstable");
+                    provider.Dispose();if(cleanups!=0)throw new Exception("Provider disposed while read still owns its handles");
+                    gate.Set();if(!released.WaitOne(2000)||cleanups!=1)throw new Exception("Provider cleanup was lost or duplicated");
+                    if((string)asyncType.GetProperty("Value").GetValue(provider,null)!="initial")throw new Exception("Disposed provider publishes stale data");
+                }finally{gate.Set();provider.Dispose();}
+            }
+            Console.WriteLine("Polling deadlines and nonblocking provider lifecycle passed");
             Console.WriteLine("Settings, battery reconnect, generic devices and native connection layouts passed");
             return 0;
         }catch(Exception error){Console.Error.WriteLine(error);return 1;}

@@ -14,7 +14,7 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr FindWindow(string className,string title);
         [DllImport("user32.dll")]static extern bool ShowWindow(IntPtr window,int command);
         [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
-        public const string Version = "1.0.12";
+        public const string Version = "1.0.14";
         [STAThread] static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;
             SetProcessDPIAware();
@@ -79,12 +79,13 @@ namespace MonitorStatsNative {
         readonly FlowLayoutPanel toolbar=new FlowLayoutPanel();
         readonly NotifyIcon tray;
         Data latest=new Data(), power=new Data();
-        int collecting, refreshRequested=1, shiftIndex;
+        int collecting, refreshRequested=1, pollingChanged, shiftIndex;
         long nextSample, lastShift;
         long nextMemoryMaintenance;
         readonly Stopwatch uptime=Stopwatch.StartNew();
         string update="";
-        bool closing;
+        volatile bool closing;
+        long sampleCount,firstSampleAt,lastSampleAt,maxCollectionMs;
         string measurePath;int measureSeconds;long peakWorking,peakPrivate;TimeSpan initialCpu;
         bool measuredSettings;
         public Dashboard(string[] args) {
@@ -94,7 +95,7 @@ namespace MonitorStatsNative {
             Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             canvas=new Canvas(options);canvas.Dock=DockStyle.Fill;Controls.Add(canvas);
             toolbar.AutoSize=true;toolbar.AutoSizeMode=AutoSizeMode.GrowAndShrink;toolbar.WrapContents=false;toolbar.FlowDirection=FlowDirection.LeftToRight;toolbar.Padding=new Padding(0);
-            ButtonButton("Refresh",()=>Interlocked.Exchange(ref refreshRequested,1));
+            ButtonButton("Refresh",RequestRefresh);
             ButtonButton("Settings",OpenSettings);
             ButtonButton("—",()=>WindowState=FormWindowState.Minimized);
             ButtonButton("□",()=>{options.Fill=!options.Fill;ApplyLayout();});
@@ -105,7 +106,7 @@ namespace MonitorStatsNative {
             var menu=new ContextMenuStrip();
             menu.Items.Add("Show",null,(s,e)=>{Show();WindowState=FormWindowState.Normal;});
             menu.Items.Add("Hide",null,(s,e)=>Hide());
-            menu.Items.Add("Refresh",null,(s,e)=>Interlocked.Exchange(ref refreshRequested,1));
+            menu.Items.Add("Refresh",null,(s,e)=>RequestRefresh());
             menu.Items.Add("Settings",null,(s,e)=>OpenSettings());
             menu.Items.Add("Exit",null,(s,e)=>Close());
             tray=new NotifyIcon { Icon=Icon,Text="MonitorStats Native",ContextMenuStrip=menu,Visible=true };
@@ -115,7 +116,7 @@ namespace MonitorStatsNative {
             initialCpu=Process.GetCurrentProcess().TotalProcessorTime;
             collector=new System.Threading.Timer(Collect,null,Timeout.Infinite,Timeout.Infinite);
             Shown+=(s,e)=> {
-                ApplyLayout();collector.Change(0,250);
+                ApplyLayout();collector.Change(0,Timeout.Infinite);
                     System.Threading.Tasks.Task.Run(()=>{string value=Services.CheckUpdate();if(!closing&&IsHandleCreated)try{BeginInvoke((Action)(()=>{
                         update=value;
                         
@@ -158,25 +159,36 @@ namespace MonitorStatsNative {
                 }
                 if(result!=DialogResult.OK)return;
                 try{dialog.Value.Save();}catch(Exception error){MessageBox.Show(this,error.Message,"Settings could not be saved");return;}
+                bool changed=options.Poll!=dialog.Value.Poll;
                 options=dialog.Value;
                 services.Configure(options);ApplyLayout();
+                if(changed){Interlocked.Exchange(ref pollingChanged,1);WakeCollector();}
             }
         }
+        void WakeCollector(){if(closing)return;try{collector.Change(0,Timeout.Infinite);}catch(ObjectDisposedException){}}
+        void RequestRefresh(){Interlocked.Exchange(ref refreshRequested,1);WakeCollector();}
+        internal static long NextDeadline(long deadline,long now,int interval){if(interval<=0)throw new ArgumentOutOfRangeException("interval");return deadline>now?deadline:deadline+((now-deadline)/interval+1)*interval;}
         void Collect(object state) {
             if(closing||Interlocked.Exchange(ref collecting,1)!=0)return;
             try {
                 bool refresh=Interlocked.Exchange(ref refreshRequested,0)!=0;
                 if(refresh) {telemetry.Refresh();services.Refresh();nextSample=0;}
+                if(Interlocked.Exchange(ref pollingChanged,0)!=0)nextSample=0;
                 if(uptime.ElapsedMilliseconds>=nextSample) {
                     int interval=options.Poll;
-                    nextSample=uptime.ElapsedMilliseconds+interval;
+                    nextSample=NextDeadline(nextSample,uptime.ElapsedMilliseconds,interval);
+                    long started=uptime.ElapsedMilliseconds;
                     var sample=telemetry.Read();
+                    if(measurePath!=null){long completed=uptime.ElapsedMilliseconds;if(sampleCount==0)firstSampleAt=completed;lastSampleAt=completed;sampleCount++;maxCollectionMs=Math.Max(maxCollectionMs,completed-started);}
                     services.Tick(sample.Section("network"));
                     var estimate=Power.Read(sample,NativeDisplay.Screens());
                     if(!closing)BeginInvoke((Action)(()=>{latest=sample;power=estimate;canvas.Stats=sample;canvas.Power=estimate;canvas.Invalidate();}));
                 }
             } catch(Exception error) { Program.Log(error.ToString()); }
-            finally {Interlocked.Exchange(ref collecting,0);}
+            finally {
+                Interlocked.Exchange(ref collecting,0);
+                if(!closing)try{int delay=Volatile.Read(ref refreshRequested)!=0||Volatile.Read(ref pollingChanged)!=0?1:(int)Math.Max(1,Math.Min(Int32.MaxValue,nextSample-uptime.ElapsedMilliseconds));collector.Change(delay,Timeout.Infinite);}catch(ObjectDisposedException){}
+            }
         }
         void Clock(object sender,EventArgs args) {
             if(uptime.ElapsedMilliseconds>=nextMemoryMaintenance){
@@ -196,6 +208,7 @@ namespace MonitorStatsNative {
                         var report=Data.Of("version",Program.Version,"architecture",Environment.Is64BitProcess?"x64":"x86","seconds",uptime.Elapsed.TotalSeconds,"processes",1,"peakWorkingSetMB",peakWorking/1048576.0,"peakPrivateMB",peakPrivate/1048576.0,
                             "currentWorkingSetMB",process.WorkingSet64/1048576.0,"currentPrivateMB",process.PrivateMemorySize64/1048576.0,
                             "managedHeapMB",GC.GetTotalMemory(false)/1048576.0,
+                            "hardwareSamples",Interlocked.Read(ref sampleCount),"averageHardwareIntervalMs",sampleCount>1?(double?)(lastSampleAt-firstSampleAt)/(sampleCount-1):null,"maxCollectionMs",Interlocked.Read(ref maxCollectionMs),
                             "averageCpuPercent",(process.TotalProcessorTime-initialCpu).TotalSeconds/uptime.Elapsed.TotalSeconds/Environment.ProcessorCount*100,
                             "cpuDetected",latest.Section("cpu").Text("model").Length>0,"gpuDetected",latest.Section("gpu").Text("model").Length>0,
                             "driveCount",latest.Rows("drives").Count(),"batteryCount",latest.Rows("batteries").Count(),"networkDetected",latest.Section("network").Text("adapter").Length>0);

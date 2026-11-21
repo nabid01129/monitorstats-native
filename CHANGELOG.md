@@ -1,5 +1,23 @@
 # Native edition changes
 
+## 1.0.14
+
+- Isolate slow wireless battery I/O from CPU, GPU, RAM and network collection using one bounded in-process worker.
+- Preserve immutable battery snapshots and defer device-handle cleanup until the active read finishes.
+- Replace the 250 ms polling wakeup loop with deadline-based, one-shot scheduling; skip missed deadlines without overlapping reads.
+- Apply polling interval changes and manual refresh immediately.
+- Label polling choices in seconds and milliseconds and explain the fixed refresh rates for slower data.
+- Add tests for nonblocking reads, single in-flight work, safe shutdown, polling deadlines and formatted settings.
+- Retain the rendering crash fix from 1.0.13.
+
+## 1.0.13
+
+- Fix the repeated rendering crash when FPS data exists but the game process name is unavailable.
+- Keep explicit references to dynamic text instead of indexing optional rows.
+- Show an unavailable-process label while retaining valid FPS data.
+- Add regression coverage reproducing the original exception and 200 render transitions with missing names, game exits and telemetry changes.
+- Preserve existing sensor-source priorities and behavior.
+
 ## 1.0.12
 
 - Keep battery icons in a stable order by device type and name, independent of discovery timing.

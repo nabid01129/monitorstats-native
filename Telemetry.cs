@@ -16,8 +16,8 @@ namespace MonitorStatsNative {
         readonly Dictionary<string, DateTime> due = new Dictionary<string, DateTime>();
         readonly Dictionary<string, Data> identities = new Dictionary<string, Data>();
         Data memory = new Data(), cpu = new Data(), gpu = new Data(), board = new Data();
-        List<Data> volumes = new List<Data>(), peripherals = new List<Data>(), batteries = new List<Data>();
-        MonitorStatsPeripheralBatteryReading[] windowsBatteries=new MonitorStatsPeripheralBatteryReading[0];
+        List<Data> volumes = new List<Data>(), peripherals = new List<Data>();
+        readonly BatteryCollector battery = new BatteryCollector();
         ProcessSnapshot processes = new ProcessSnapshot();
         NetworkInterface adapter;
         long received, sent, sampled;
@@ -35,33 +35,14 @@ namespace MonitorStatsNative {
             if (due.TryGetValue(key, out value) && DateTime.UtcNow < value) return false;
             due[key] = DateTime.UtcNow.AddSeconds(seconds); return true;
         }
-        public void Refresh() { due.Clear(); }
-        public Telemetry() { MonitorStatsPeripheralBattery.RegisterForDeviceNotifications(); }
+        public void Refresh() { due.Clear(); battery.Refresh(); }
+        public Telemetry() { }
         public Data Read() {
             if (closed) return new Data();
             if (Due("identity", 120)) Inventory();
             if (Due("storage", 30)) Storage();
             if (Due("process", 5)) processes = MonitorStatsMemory.ReadProcesses();
-            bool changed = MonitorStatsPeripheralBattery.ConsumeDeviceChange();
-
-            bool presence = Due("presence", 5) || changed, batteryRefresh = Due("battery", 300);
-            bool discover=batteryRefresh||changed||Due("batteryInventory",30);
-            var fresh = MonitorStatsPeripheralBattery.Read(discover);
-            if(discover)windowsBatteries=fresh.Where(b=>!DynamicBattery(b)).Concat(BluetoothState.Controllers()).ToArray();
-            fresh=fresh.Where(DynamicBattery).Concat(windowsBatteries).GroupBy(b=>String.IsNullOrEmpty(b.ContainerId)?b.Name:b.ContainerId,StringComparer.OrdinalIgnoreCase).Select(g=>g.First()).ToArray();
-            if (presence || batteryRefresh) {
-                var connected = BluetoothState.Read();
-                var updated = new List<Data>();
-                foreach (var item in fresh) {
-                    if (!BluetoothState.IsConnected(item,connected)) continue;
-                    var old = batteries.FirstOrDefault(b => b.Text("name") == item.Name);
-                    updated.Add(!batteryRefresh && old != null && item.Detail != "MCHOSE G3 2.4 GHz receiver" ? old : Battery(item));
-                }
-                batteries = updated;
-            } else {
-                batteries.RemoveAll(b => b.Text("detail") == "MCHOSE G3 2.4 GHz receiver" || b.Text("detail").StartsWith("Windows controller level"));
-                batteries.AddRange(fresh.Where(DynamicBattery).Select(Battery));
-            }
+            battery.Request();
             var sensors = Sensors();
             var cpuNow = cpu.Copy(); var gpuNow = gpu.Copy();
             var loads = CpuLoads();
@@ -117,14 +98,10 @@ namespace MonitorStatsNative {
                 try { var di = new DriveInfo(v.Text("letter")); copy["freeGB"] = di.TotalFreeSpace / 1073741824.0; copy["usedGB"] = (di.TotalSize - di.TotalFreeSpace) / 1073741824.0; copy["loadPercent"] = 100.0 * (di.TotalSize - di.TotalFreeSpace) / di.TotalSize; } catch { }
                 return copy;
             }).ToArray();
-            var result = Data.Of("cpu", cpuNow, "gpu", gpuNow, "ram", ram, "drives", drives, "fans", fans.ToArray(), "motherboard", board, "peripherals", peripherals.ToArray(), "network", Network(), "batteries", batteries.ToArray(), "status", "live");
+            var result = Data.Of("cpu", cpuNow, "gpu", gpuNow, "ram", ram, "drives", drives, "fans", fans.ToArray(), "motherboard", board, "peripherals", peripherals.ToArray(), "network", Network(), "batteries", battery.Snapshot, "status", "live");
             var power = sensors.FirstOrDefault(s => Query.Match(s.Text("units"), @"^(W|watts?)$") && Query.Match(s.Text("name"), @"^(whole system power|total system power|system total power|total (pc|computer) power|(psu|power supply) (output )?power|ac input power|wall power)$"));
             if (power != null) { result["systemPowerW"] = power.Number("value"); result["systemPowerKind"] = Query.Match(power.Text("name"), "whole|system total|total system") ? "whole-system" : Query.Match(power.Text("name"), "ac input|wall") ? "pc-input" : "pc-output"; }
             return result;
-        }
-        static bool DynamicBattery(MonitorStatsPeripheralBatteryReading b){return b.Detail=="MCHOSE G3 2.4 GHz receiver"||(b.Detail??"").StartsWith("Windows controller level");}
-        static Data Battery(MonitorStatsPeripheralBatteryReading b) {
-            return Data.Of("name", b.Name, "category", b.Category, "batteryPercent", b.BatteryPercent, "batteryLevel", b.BatteryLevel, "detail", b.Detail);
         }
         static int SensorIndex(Data s) { var m = Regex.Match(s.Text("name"), @"\d+"); return m.Success ? Int32.Parse(m.Value) : 0; }
         static void Fill(Data target, IEnumerable<Data> sensors, string field, string pattern) {
@@ -254,7 +231,7 @@ namespace MonitorStatsNative {
         public void Dispose() {
             closed = true;
             if (mah != null) mah.Dispose(); if (mahMap != null) mahMap.Dispose();
-            MonitorStatsPeripheralBattery.UnregisterDeviceNotifications();
+            battery.Dispose();
             ForegroundMonitor.CloseRtss(); Nvml.Close();
         }
     }
