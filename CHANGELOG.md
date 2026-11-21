@@ -1,5 +1,59 @@
 # Native edition changes
 
+## 1.0.21 (2026-11-21)
+
+- Read primitive numeric telemetry directly instead of formatting and parsing it on every access, preserving native numeric precision and invariant parsing for text-based values.
+- Reuse palette brushes during drawing and dispose them on theme changes or canvas close; reuse one text-formatting object for the canvas lifetime.
+- Use numeric font-cache keys and cache the selected theme to reduce repeated string allocations and catalog lookups.
+- Remove an unused text-fitting flag; keep the existing text fitting, layout, themes and polling behavior.
+- Add tests for numeric precision, zero values, invalid/non-finite inputs, regional settings and bounded drawing resources; verify RTSS frame calculations, timestamp wrap and dead-feed handling.
+- Verify identical rendered fixture pixels outside the wall-clock area and measure the numeric/rendering paths against version 1.0.20.
+
+## 1.0.20 (local build)
+
+- Keep custom names for temporarily disconnected drives when other settings are saved. Reset names still clears all custom names, and Cancel preserves the original configuration.
+- Use the same automatic monitor fallback in Settings and the dashboard, preventing an unrelated settings save from switching monitors.
+- Isolate network-adapter query failures so a changing or removed adapter cannot discard the rest of a hardware sample.
+- Prevent nested Settings dialogs from overwriting each other's changes.
+- Clean up drive labels in sensor diagnostics.
+- Add regression checks for monitor fallback, disconnected-drive names, reset/cancel behavior, and failed/recovered network providers.
+
+## 1.0.19 (local build)
+
+- Add a light Sensors settings tab showing per-reading sources, missing-reading explanations, provider status and sample age from existing snapshots.
+- Refresh diagnostics only when the tab is opened or its refresh button is clicked; do not add sensor scans or network requests.
+- Add an opt-in background polling option: use a 10-second minimum interval when minimized or hidden, and restore the selected interval immediately when shown.
+- Reduce clock timer wakeups while background polling is active; preserve normal foreground behavior and slower metadata schedules.
+- Record source labels when Afterburner, Windows, NVIDIA or Fan Control actually supplies a value.
+- Validate diagnostic source labels, unavailable values, settings persistence and polling policies alongside the existing regression suite.
+
+## 1.0.18 (local build)
+
+- Keep successful IPv4 and IPv6 readings independently across transient lookup failures; retry when IPv4 is missing rather than treating IPv6 alone as a complete lookup.
+- Clear previous network details on connection changes as before.
+- Make the full Windows Update summary clickable, and ignore right clicks on dashboard actions.
+- Ensure in-flight telemetry collectors release their handles once on shutdown; guard display-change callbacks during exit.
+- Correct Afterburner CPU-core and RAM names that were incorrectly prefixed as GPU sensors; use valid per-core clock/temperature readings when aggregate readings are unavailable.
+- Cache frequently reused sensor-matching expressions and NVIDIA function bindings; skip RTSS reads when FPS display is disabled.
+- Remove unused console polling loops and obsolete scroll state.
+- Add network-failure and update-click regression checks, and verify rendered content stays within monitor height.
+- Add an optional --review launch flag for inspecting the dashboard with desktop automation; normal window behavior is unchanged.
+
+## 1.0.17 (local build)
+
+- Include pending driver updates and optional preview updates in the cached Windows Update notice.
+- Prioritize Windows/software update titles over optional driver titles in the compact summary.
+- Keep update checks in the existing bounded background worker, without online scans or installation.
+
+## 1.0.16 (local build)
+
+- Show a compact pending Windows Update or restart notice beside the Windows version, with a short update title and remaining-update count.
+- Open Windows Update settings when the notice is clicked.
+- Read Windows' cached software-update catalog at startup and every 30 minutes in a bounded background worker; do not trigger online scans, downloads or installation.
+- Hide the notice when no pending update or restart is reported.
+- Add tests for update summaries, restart notices, all themes and click targets across OLED shifts.
+- Host managed validation checks in Windows PowerShell, with architecture-matched test hosts.
+
 ## 1.0.15
 
 - Release Afterburner shared-memory mappings marked DEAD or otherwise invalid instead of holding them indefinitely.

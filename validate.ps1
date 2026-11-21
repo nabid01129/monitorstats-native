@@ -1,6 +1,7 @@
 param([string]$BuildDirectory,[ValidateSet('x86','x64')][string]$Architecture='x64')
 $ErrorActionPreference='Stop'
 $framework=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
+$testHost=if($Architecture -eq 'x86'){Join-Path $env:WINDIR 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'}else{Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'}
 $output=if($BuildDirectory){[IO.Path]::GetFullPath($BuildDirectory)}else{Join-Path $PSScriptRoot 'build'}
 $exe=Join-Path $output 'MonitorStats Native.exe'
 $check=@'
@@ -16,6 +17,7 @@ class Checks {
             var assembly=Assembly.LoadFrom("MonitorStats Native.exe");
             var optionsType=assembly.GetType("MonitorStatsNative.Options",true);
             var options=Activator.CreateInstance(optionsType,true);
+            if((bool)optionsType.GetField("LowPowerWhenHidden").GetValue(options))throw new Exception("Background mode must be opt-in");
             optionsType.GetField("Poll").SetValue(options,27);
             optionsType.GetField("Width").SetValue(options,-10);
             optionsType.GetMethod("Normalize").Invoke(options,null);
@@ -23,6 +25,16 @@ class Checks {
             var canvasType=assembly.GetType("MonitorStatsNative.Canvas",true);
             var dataType=assembly.GetType("MonitorStatsNative.Data",true);
             Func<object[],object> data=values=>dataType.GetMethod("Of").Invoke(null,new object[]{values});
+            var numeric=data(new object[]{"integer",-12,"unsigned",UInt64.MaxValue,"float",0.1f,"decimal",12.75m,"precise",1.2345678901234567,"text","1.25e2","zero",0,"nan",Double.NaN,"infinity",Double.PositiveInfinity,"boolean",true,"bad","1,25","character",'7',"enum",DayOfWeek.Monday,"unnamedEnum",(DayOfWeek)17});
+            var readNumber=(Func<string,double?>)Delegate.CreateDelegate(typeof(Func<string,double?>),numeric,dataType.GetMethod("Number"));
+            var culture=System.Globalization.CultureInfo.CurrentCulture;
+            try{
+                System.Globalization.CultureInfo.CurrentCulture=new System.Globalization.CultureInfo("de-DE");
+                foreach(var expected in new[]{new{Key="integer",Value=-12.0},new{Key="unsigned",Value=(double)UInt64.MaxValue},new{Key="float",Value=(double)0.1f},new{Key="decimal",Value=12.75},new{Key="precise",Value=1.2345678901234567},new{Key="text",Value=125.0},new{Key="zero",Value=0.0},new{Key="character",Value=7.0},new{Key="unnamedEnum",Value=17.0}})
+                    if(readNumber(expected.Key)!=expected.Value)throw new Exception("Numeric reading loses precision or depends on regional settings: "+expected.Key);
+                foreach(string key in new[]{"missing","nan","infinity","boolean","bad","enum"})if(readNumber(key).HasValue)throw new Exception("Invalid numeric reading accepted: "+key);
+            }finally{System.Globalization.CultureInfo.CurrentCulture=culture;}
+            Console.WriteLine("Numeric precision, zero values, invalid readings and regional settings passed");
             string windows=(string)canvasType.GetMethod("WindowsLabel",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,new object[]{"Windows 10 Enterprise","Professional","26300","26H2"});
             if(windows!="Windows 11 Pro \u00b7 26H2")throw new Exception("Windows edition detection failed: "+windows);
             Console.WriteLine("Windows edition uses Professional over conflicting product text");
@@ -51,13 +63,42 @@ class Checks {
                     canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));themes++;
                 }
                 if(themes!=21)throw new Exception("Theme catalog incomplete");
+                var updateType=assembly.GetType("MonitorStatsNative.WindowsUpdates",true);
+                var notice=updateType.GetMethod("Notice",BindingFlags.Static|BindingFlags.NonPublic);
+                var emptyNotice=notice.Invoke(null,new object[]{0,false,new string[0]});
+                if((string)dataType.GetMethod("Text").Invoke(emptyNotice,new object[]{"heading"})!="")throw new Exception("Update notice shown without pending updates");
+                var pendingNotice=notice.Invoke(null,new object[]{3,false,new[]{"Windows security update (KB0000001)",".NET update"}});
+                if(!((string)dataType.GetMethod("Text").Invoke(pendingNotice,new object[]{"summary"})).Contains("+2 more"))throw new Exception("Update summary does not account for remaining updates");
+                canvasType.GetField("WindowsUpdate").SetValue(canvas,pendingNotice);
+                int updateClicks=0;
+                canvasType.GetEvent("WindowsUpdateClicked").AddEventHandler(canvas,(Action)(()=>updateClicks++));
+                for(int offset=0;offset<9;offset++){
+                    canvasType.GetField("Shift").SetValue(canvas,offset);
+                    canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
+                    var button=(Rectangle)canvasType.GetField("windowsUpdateButton",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(canvas);
+                    if(button.IsEmpty)throw new Exception("Windows Update notice has no visible click target");
+                    canvasType.GetMethod("OnMouseDown",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(canvas,new object[]{new MouseEventArgs(MouseButtons.Left,1,button.Left+button.Width/2,button.Top+button.Height/2,0)});
+                    var summaryButton=(Rectangle)canvasType.GetField("windowsUpdateSummaryButton",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(canvas);
+                    if(summaryButton.IsEmpty)throw new Exception("Update summary is not clickable");
+                    canvasType.GetMethod("OnMouseDown",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(canvas,new object[]{new MouseEventArgs(MouseButtons.Left,1,summaryButton.Left+2,summaryButton.Top+summaryButton.Height/2,0)});
+                    canvasType.GetMethod("OnMouseDown",BindingFlags.NonPublic|BindingFlags.Instance).Invoke(canvas,new object[]{new MouseEventArgs(MouseButtons.Right,1,button.Left+2,button.Top+2,0)});
+                }
+                if(updateClicks!=18)throw new Exception("Windows Update click target drifts during OLED shifting or responds to right clicks");
+                var restartNotice=notice.Invoke(null,new object[]{0,true,new string[0]});
+                if(!((string)dataType.GetMethod("Text").Invoke(restartNotice,new object[]{"heading"})).Contains("restart"))throw new Exception("Restart requirement is omitted");
+                foreach(object theme in (IEnumerable)assembly.GetType("MonitorStatsNative.Theme",true).GetField("All").GetValue(null)){
+                    optionsType.GetField("Theme").SetValue(options,theme.GetType().GetField("Id").GetValue(theme));
+                    canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
+                }
+                canvasType.GetField("Shift").SetValue(canvas,0);
+                Console.WriteLine("Windows Update summary, restart notice and OLED click targets passed");
                 Console.WriteLine("Rendered all "+themes+" native themes");
                 optionsType.GetField("Theme").SetValue(options,"fullblack");
                 canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
                 if(bitmap.GetPixel(0,0).ToArgb()!=Color.Black.ToArgb())throw new Exception("Full Black background is not black");
                 object drive=data(new object[]{"id","C:","letter","C:","name","Example long NVMe drive model (C:)","type","NVMe","usedGB",100.0,"freeGB",900.0,"totalGB",1000.0,"readKBps",0.0,"writeKBps",22.0,"health","Healthy","tempC",38.0,"wearPercent",2.0,"powerOnHours",1000.0,"hostWritesTB",15.0});
-                object rich=data(new object[]{"cpu",data(new object[]{"model","Intel Core i5-10400 CPU @ 2.90 GHz","loadPercent",12.0,"powerW",20.0,"cores",new double[12]}),
-                    "gpu",data(new object[]{"model","NVIDIA GeForce RTX 4060","vramUsedGB",1.0,"vramTotalGB",8.0}),
+                object rich=data(new object[]{"cpu",data(new object[]{"model","Example CPU","loadPercent",12.0,"powerW",20.0,"cores",new double[12]}),
+                    "gpu",data(new object[]{"model","Example GPU","vramUsedGB",1.0,"vramTotalGB",8.0}),
                     "ram",data(new object[]{"spec","DDR4 - Dual channel","stickCapacitiesGB",new double[]{8,8,8,8},"stickCount",4,"totalGB",32.0}),
                     "drives",new[]{drive,drive,drive,drive}});
                 canvasType.GetField("Stats").SetValue(canvas,rich);
@@ -69,19 +110,24 @@ class Checks {
                         foreach(int scale in new[]{70,100,130}){
                             optionsType.GetField("Scale").SetValue(options,scale);
                             canvas.DrawToBitmap(scaled,new Rectangle(Point.Empty,size));
-                            foreach(string scrollField in new[]{"leftScrollMax","rightScrollMax"})if((int)canvasType.GetField(scrollField,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)!=0)throw new Exception("Layout requires scrolling");
+                            using(var overflow=new Bitmap(size.Width,size.Height+100))using(var g=Graphics.FromImage(overflow))using(var args=new PaintEventArgs(g,new Rectangle(0,0,overflow.Width,overflow.Height))){
+                                paint.Invoke(canvas,new object[]{args});
+                                for(int y=size.Height;y<overflow.Height;y++)for(int x=0;x<overflow.Width;x+=3)if(overflow.GetPixel(x,y).ToArgb()!=Color.Black.ToArgb())throw new Exception("Dashboard draws content below monitor bounds");
+                            }
                         }
                         if(size.Width==768){
                             optionsType.GetField("Scale").SetValue(options,100);
                             canvas.DrawToBitmap(scaled,new Rectangle(Point.Empty,size));
-                            foreach(string scrollField in new[]{"leftScrollMax","rightScrollMax"})if((int)canvasType.GetField(scrollField,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)!=0)throw new Exception("Layout requires scrolling");
-                            int maximum=(int)canvasType.GetField("rightScrollMax",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas);
-                            if(maximum>0)throw new Exception("Portrait layout clips ordinary four-drive inventory");
+                            using(var overflow=new Bitmap(size.Width,size.Height+100))using(var g=Graphics.FromImage(overflow))using(var args=new PaintEventArgs(g,new Rectangle(0,0,overflow.Width,overflow.Height))){
+                                paint.Invoke(canvas,new object[]{args});
+                                for(int y=size.Height;y<overflow.Height;y++)for(int x=0;x<overflow.Width;x+=3)if(overflow.GetPixel(x,y).ToArgb()!=Color.Black.ToArgb())throw new Exception("Dashboard draws content below monitor bounds");
+                            }
                             scaled.Save("fullblack-preview.png",System.Drawing.Imaging.ImageFormat.Png);
                         }
                     }
                 }
                 if(((IDictionary)canvasType.GetField("fonts",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)).Count>180)throw new Exception("Font cache grows without limit");
+                if(((IDictionary)canvasType.GetField("brushes",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(canvas)).Count>16)throw new Exception("Drawing resource cache grows across theme changes");
                 canvas.Size=new Size(768,1318);
                 optionsType.GetField("Scale").SetValue(options,100);
                 canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
@@ -138,8 +184,8 @@ class Checks {
                 }
                 Console.WriteLine("Rendered Real IP and Shared IP badges");
             }
-            object cpu=data(new object[]{"model","Intel Core i5-10400","powerW",20.0,"loadPercent",20.0});
-            object gpu=data(new object[]{"model","NVIDIA GeForce RTX 4060","watt",50.0,"coreLoadPercent",10.0});
+            object cpu=data(new object[]{"model","Example CPU","powerW",20.0,"loadPercent",20.0});
+            object gpu=data(new object[]{"model","Example GPU","watt",50.0,"coreLoadPercent",10.0});
             object ram=data(new object[]{"generation","DDR4","totalGB",32.0,"stickCount",4,"speedMTs",2666});
             object stats=data(new object[]{"cpu",cpu,"gpu",gpu,"ram",ram,"systemPowerW",123.0,"systemPowerKind","whole-system"});
             var estimate=assembly.GetType("MonitorStatsNative.Power",true).GetMethod("Read").Invoke(null,new object[]{stats,Screen.AllScreens});
@@ -159,10 +205,21 @@ class Checks {
                 }
             }
             Console.WriteLine("Window placement stays within each monitor working area");
-            var memory=assembly.GetType("MonitorStatsNative.VideoMemory",true).GetMethod("Read").Invoke(null,new object[]{"NVIDIA GeForce RTX 4060"});
-            if(memory!=null)Console.WriteLine("Windows GPU memory record "+Convert.ToDouble(memory).ToString("0.00")+" GB");
             optionsType.GetField("Theme").SetValue(options,"fullblack");
-            using(var settings=(Form)Activator.CreateInstance(assembly.GetType("MonitorStatsNative.Settings",true),BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public,null,new object[]{options,stats,estimate,""},null)){
+            var originalNames=(System.Collections.Generic.Dictionary<string,string>)optionsType.GetField("Names").GetValue(options);
+            originalNames["drive:Z:"]="Offline archive";
+            var screens=(Screen[])assembly.GetType("MonitorStatsNative.NativeDisplay",true).GetMethod("Screens").Invoke(null,null);
+            var selectScreen=assembly.GetType("MonitorStatsNative.NativeDisplay",true).GetMethod("ScreenIndex",BindingFlags.Static|BindingFlags.NonPublic);
+            int automaticScreen=(int)selectScreen.Invoke(null,new object[]{screens,""});
+            int expectedScreen=Array.FindIndex(screens,screen=>!screen.Primary);if(expectedScreen<0)expectedScreen=0;
+            if(automaticScreen!=expectedScreen||(int)selectScreen.Invoke(null,new object[]{screens,"missing-monitor"})!=expectedScreen)throw new Exception("Automatic monitor selection is inconsistent");
+            for(int index=0;index<screens.Length;index++)if((int)selectScreen.Invoke(null,new object[]{screens,screens[index].DeviceName})!=index)throw new Exception("Explicit monitor choice ignored");
+            var statusType=assembly.GetType("MonitorStatsNative.SensorStatus",true);
+            var diagnosticStats=data(new object[]{"gpu",data(new object[]{"fanRPM",0.0,"fanRPMSource","NVIDIA driver (NVML)"}),"cpu",data(new object[]{"loadPercent",3.0,"loadPercentSource","Windows"})});
+            string statusText=(string)statusType.GetMethod("Describe").Invoke(null,new object[]{diagnosticStats,estimate,data(new object[]{"publicIPv4","203.0.113.9"}),data(new object[]{"status","cached"}),1000,false,false,true,false});
+            if(!statusText.Contains("GPU fan speed: Available \u2014 NVIDIA driver (NVML)")||!statusText.Contains("CPU clock: Unavailable")||statusText.Contains("203.0.113.9"))throw new Exception("Sensor status is inaccurate or exposes an IP address");
+            int statusReads=0;Func<string> readStatus=()=>{statusReads++;return statusText;};
+            using(var settings=(Form)Activator.CreateInstance(assembly.GetType("MonitorStatsNative.Settings",true),BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public,null,new object[]{options,stats,estimate,"",readStatus},null)){
                 if(settings.BackColor.ToArgb()!=SystemColors.Control.ToArgb())throw new Exception("Settings does not use the standard light appearance");
                 var controls=(System.Collections.Generic.Dictionary<string,Control>)settings.GetType().GetField("inputs",BindingFlags.NonPublic|BindingFlags.Instance).GetValue(settings);
                 var themeChoice=(ComboBox)controls["theme"];
@@ -175,17 +232,57 @@ class Checks {
                 var tabs=settings.Controls.OfType<TabControl>().First(); tabs.SelectedIndex=4; Application.DoEvents();
                 var componentBox=tabs.TabPages[4].Controls[0].Controls.OfType<TextBox>().Single(c=>c.Name=="PowerComponents");
                 if(!componentBox.Visible||componentBox.Height<200||componentBox.Width<300||componentBox.Text.Length==0)throw new Exception("Power breakdown is missing or collapsed");
+                if(statusReads!=0)throw new Exception("Sensor diagnostics runs before its tab is opened");
+                if(tabs.TabPages.Count!=6)throw new Exception("Sensors tab is missing");
+                tabs.SelectedIndex=5;Application.DoEvents();
+                var statusBox=tabs.TabPages[5].Controls[0].Controls.OfType<TextBox>().Single(c=>c.Name=="SensorStatus");
+                if(statusReads!=1||statusBox.Text!=statusText||!statusBox.ReadOnly||!statusBox.Visible||statusBox.Height<200||statusBox.Width<300||statusBox.AutoSize)throw new Exception("Sensors tab does not show current snapshot status");
+                tabs.TabPages[5].Controls[0].Controls.OfType<Button>().Single(c=>c.Text=="Refresh status").PerformClick();
+                if(statusReads!=2)throw new Exception("Manual status refresh failed");
+                ((CheckBox)controls["lowPower"]).Checked=true;
                 settings.Hide();
                 settings.GetType().GetMethod("Save",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(settings,null);
                 var saved=settings.GetType().GetField("Value").GetValue(settings);
                 if((int)optionsType.GetField("Poll").GetValue(saved)!=1000)throw new Exception("Formatted polling choice does not save its millisecond value");
                 if((string)optionsType.GetField("Theme").GetValue(saved)!="fullblack")throw new Exception("Full Black choice does not persist");
+                if(!(bool)optionsType.GetField("LowPowerWhenHidden").GetValue(saved))throw new Exception("Background option does not save");
+                if((string)optionsType.GetField("Display").GetValue(saved)!=screens[automaticScreen].DeviceName)throw new Exception("Saving settings changes the automatic widget monitor");
+                var savedNames=(System.Collections.Generic.Dictionary<string,string>)optionsType.GetField("Names").GetValue(saved);
+                if(!savedNames.ContainsKey("drive:Z:")||savedNames["drive:Z:"]!="Offline archive")throw new Exception("Saving settings erased an offline drive name");
             }
+            using(var settings=(Form)Activator.CreateInstance(assembly.GetType("MonitorStatsNative.Settings",true),BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public,null,new object[]{options,stats,estimate,""},null)){
+                settings.Show();Application.DoEvents();var tabs=settings.Controls.OfType<TabControl>().First();tabs.SelectedIndex=3;Application.DoEvents();
+                tabs.TabPages[3].Controls[0].Controls.OfType<Button>().Single(button=>button.Text=="Reset names").PerformClick();
+                var reset=optionsType.GetField("Names").GetValue(settings.GetType().GetField("Value").GetValue(settings)) as System.Collections.Generic.Dictionary<string,string>;
+                if(reset.Count!=0||!originalNames.ContainsKey("drive:Z:"))throw new Exception("Reset names misses offline entries or changes settings before Save");
+                settings.Close();
+            }
+            Console.WriteLine("Automatic monitor consistency and offline device-name persistence passed");
+            Console.WriteLine("On-demand sensor diagnostics, source labels and background option passed");
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.16"}))throw new Exception("Numeric update comparison failed");
+            foreach(string tag in new[]{"v1.0.21","v1.0.20","v1.0.19","v1.0.18","v1.0.17","v1.0.16","v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.22"}))throw new Exception("Numeric update comparison failed");
             var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
+            var networkSnapshot=assembly.GetType("MonitorStatsNative.Telemetry",true).GetMethod("NetworkSnapshot",BindingFlags.Static|BindingFlags.NonPublic);
+            var networkDelegate=typeof(Func<>).MakeGenericType(dataType);
+            foreach(var error in new Exception[]{new System.Net.NetworkInformation.NetworkInformationException(),new System.Net.Sockets.SocketException(),new InvalidOperationException("Adapter changed")}){
+                var read=System.Linq.Expressions.Expression.Lambda(networkDelegate,System.Linq.Expressions.Expression.Throw(System.Linq.Expressions.Expression.Constant(error),dataType)).Compile();
+                var isolated=networkSnapshot.Invoke(null,new object[]{read});
+                if((int)dataType.GetProperty("Count").GetValue(isolated,null)!=0)throw new Exception("Failed network provider returns stale readings");
+            }
+            var goodNetwork=data(new object[]{"adapter","Example adapter"});
+            var goodRead=System.Linq.Expressions.Expression.Lambda(networkDelegate,System.Linq.Expressions.Expression.Constant(goodNetwork,dataType)).Compile();
+            if(networkSnapshot.Invoke(null,new object[]{goodRead})!=goodNetwork)throw new Exception("Network recovery loses fresh readings");
+            Console.WriteLine("Network provider failure isolation and recovery passed");
             var binding=BindingFlags.Instance|BindingFlags.NonPublic;
+            var merge=serviceType.GetMethod("MergePublicAddresses",BindingFlags.Static|BindingFlags.NonPublic);
+            var addresses=data(new object[]{"publicIPv4","203.0.113.7","publicIPv6","2001:db8::7"});
+            merge.Invoke(null,new object[]{addresses,null,"2001:db8::8"});
+            if((string)dataType.GetMethod("Text").Invoke(addresses,new object[]{"publicIPv4"})!="203.0.113.7")throw new Exception("Transient IPv4 failure erased the last valid address");
+            merge.Invoke(null,new object[]{addresses,"203.0.113.8",null});
+            if((string)dataType.GetMethod("Text").Invoke(addresses,new object[]{"publicIPv6"})!="2001:db8::8")throw new Exception("Transient IPv6 failure erased the last valid address");
+            if((string)dataType.GetMethod("Text").Invoke(addresses,new object[]{"publicIPv4"})!="203.0.113.8")throw new Exception("Fresh public address ignored");
+            Console.WriteLine("Independent IPv4/IPv6 failure recovery passed");
             using(var service=(IDisposable)Activator.CreateInstance(serviceType,new[]{options})){
                 var deadline=DateTime.UtcNow.AddMinutes(20);
                 serviceType.GetField("opticalNext",binding).SetValue(service,deadline);
@@ -198,6 +295,10 @@ class Checks {
                 serviceType.GetMethod("Configure").Invoke(service,new[]{changed});
                 var snapshot=serviceType.GetMethod("Snapshot").Invoke(service,null);
                 if(dataType.GetMethod("Get").Invoke(snapshot,new object[]{"rxOpticalPowerDbm"})!=null)throw new Exception("Changed ONU credentials retain old readings");
+                serviceType.GetField("details",binding).SetValue(service,addresses);
+                serviceType.GetMethod("Changed",binding).Invoke(service,new object[]{null,EventArgs.Empty});
+                snapshot=serviceType.GetMethod("Snapshot").Invoke(service,null);
+                if((string)dataType.GetMethod("Text").Invoke(snapshot,new object[]{"publicIPv4"})!="")throw new Exception("Network change retains old public addresses");
             }
             var batteryType=assembly.GetType("MonitorStatsPeripheralBattery",true);
             var batteryFlags=BindingFlags.Static|BindingFlags.NonPublic;
@@ -230,6 +331,10 @@ class Checks {
             int objectSize=System.Runtime.InteropServices.Marshal.SizeOf(bluetooth.GetNestedType("DeviceObject",BindingFlags.NonPublic));
             if(compositeSize!=(IntPtr.Size==8?32:28)||propertySize!=(IntPtr.Size==8?48:40)||objectSize!=(IntPtr.Size==8?32:16))throw new Exception("Windows device connection structures have incorrect alignment");
             var pollingDeadline=assembly.GetType("MonitorStatsNative.Dashboard",true).GetMethod("NextDeadline",BindingFlags.Static|BindingFlags.NonPublic);
+            var pollInterval=assembly.GetType("MonitorStatsNative.Dashboard",true).GetMethod("PollInterval",BindingFlags.Static|BindingFlags.NonPublic);
+            foreach(int interval in new[]{1000,2000,3000,5000,10000}){
+                if((int)pollInterval.Invoke(null,new object[]{interval,true})!=10000||(int)pollInterval.Invoke(null,new object[]{interval,false})!=interval)throw new Exception("Background polling changes the selected foreground interval");
+            }
             foreach(var scenario in new[]{new long[]{0,0,1000},new long[]{1000,1000,2000},new long[]{1000,3500,4000},new long[]{4000,3600,4000}})
                 if((long)pollingDeadline.Invoke(null,new object[]{scenario[0],scenario[1],1000})!=scenario[2])throw new Exception("Polling deadline drifts or replays missed ticks");
             var asyncType=assembly.GetType("MonitorStatsNative.AsyncSnapshot`1",true).MakeGenericType(typeof(string));
@@ -258,10 +363,10 @@ class Checks {
 '@
 $source=Join-Path $output 'Checks.cs'
 [IO.File]::WriteAllText($source,$check)
-& (Join-Path $framework 'csc.exe') /nologo /target:exe "/platform:$Architecture" /optimize+ "/out:$output/Checks.exe" /r:System.Windows.Forms.dll /r:System.Drawing.dll $source
+& (Join-Path $framework 'csc.exe') /nologo /target:library "/platform:$Architecture" /optimize+ "/out:$output/Checks.dll" /r:System.Windows.Forms.dll /r:System.Drawing.dll $source
 if($LASTEXITCODE -ne 0){throw 'Validation compilation failed'}
 Push-Location $output
-try { & './Checks.exe'; if($LASTEXITCODE -ne 0){throw 'Native validation failed'} } finally { Pop-Location }
+try { & $testHost -NoProfile -STA -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'validate-host.ps1') -Assembly (Join-Path $output 'Checks.dll'); if($LASTEXITCODE -ne 0){throw 'Native validation failed'} } finally { Pop-Location }
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'validate-feed.ps1') -Assembly $exe
+& $testHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'validate-feed.ps1') -Assembly $exe
 if($LASTEXITCODE -ne 0){throw 'Afterburner recovery validation failed'}

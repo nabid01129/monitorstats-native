@@ -12,11 +12,12 @@ namespace MonitorStatsNative {
         readonly Dictionary<string,TextBox> names=new Dictionary<string,TextBox>();
         readonly Label release=new Label();
         static readonly string Releases=Services.Releases;
-        public Settings(Options value,Data stats,Data power,string latest){
+        public Settings(Options value,Data stats,Data power,string latest):this(value,stats,power,latest,null){}
+        public Settings(Options value,Data stats,Data power,string latest,Func<string> readStatus){
             Value=value.Clone();Text="MonitorStats Native settings · "+Program.Version;Size=new Size(720,760);MinimumSize=new Size(560,520);
             StartPosition=FormStartPosition.CenterParent;ShowInTaskbar=false;Font=new Font("Segoe UI",10);
             var tabs=new TabControl {Dock=DockStyle.Fill};Controls.Add(tabs);
-            FlowLayoutPanel general=Page(tabs,"General"),display=Page(tabs,"Display"),network=Page(tabs,"Network"),rename=Page(tabs,"Device names"),wattage=Page(tabs,"Power estimate");
+            FlowLayoutPanel general=Page(tabs,"General"),display=Page(tabs,"Display"),network=Page(tabs,"Network"),rename=Page(tabs,"Device names"),wattage=Page(tabs,"Power estimate"),sensors=Page(tabs,"Sensors");
             Add(general,"Native version",new Label{Text=Program.Version+(Environment.Is64BitProcess?" · 64-bit":" · 32-bit"),AutoSize=true});
             release.Text=String.IsNullOrEmpty(latest)?"GitHub update check unavailable":"Latest GitHub release "+latest;release.AutoSize=true;
             Add(general,"Updates",release);
@@ -27,12 +28,13 @@ namespace MonitorStatsNative {
             Select(general,"Hardware update interval (milliseconds)","poll",new[]{"1000","2000","3000","5000","10000"},Value.Poll.ToString());
             var polling=(ComboBox)inputs["poll"];polling.FormattingEnabled=true;polling.Format+=(s,e)=>{int ms;if(Int32.TryParse(Convert.ToString(e.ListItem),out ms))e.Value=(ms/1000)+" second"+(ms==1000?"":"s")+" ("+ms+" ms)";};
             Add(general,"",new Label{AutoSize=true,Text="Applies to CPU, GPU, RAM and network traffic. Processes refresh every 5 seconds; drive health every 30 seconds; battery levels every 5 minutes. Clock updates independently every second."});
+            Check(general,"Reduce polling while minimized or hidden (10 seconds)","lowPower",Value.LowPowerWhenHidden);
             Select(general,"OLED shift interval (minutes)","shift",new[]{"1","2","5","10","15","30","60"},(Value.Shift/60000).ToString());
             Check(general,"Start with Windows","startup",Value.Startup);Check(general,"Show game frame rate","fps",Value.Fps);Check(general,"Show CPU thread bars","cores",Value.Cores);
             var screens=NativeDisplay.Screens();
             var target=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=480};
             foreach(var pair in screens.Select((s,i)=>new{Screen=s,Index=i}))target.Items.Add(new Choice{Id=pair.Screen.DeviceName,Text=NativeDisplay.Label(pair.Screen,pair.Index)});
-            target.SelectedIndex=Math.Max(0,Array.FindIndex(screens,s=>s.DeviceName==Value.Display));inputs["display"]=target;Add(display,"Widget monitor",target);
+            target.SelectedIndex=NativeDisplay.ScreenIndex(screens,Value.Display);inputs["display"]=target;Add(display,"Widget monitor",target);
             var game=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=480};
             for(int i=0;i<screens.Length;i++)game.Items.Add(new Choice{Id=(i+1).ToString(),Text=NativeDisplay.Label(screens[i],i)});
             game.SelectedIndex=Math.Max(0,Math.Min(screens.Length-1,Value.GameMonitor-1));inputs["game"]=game;Add(display,"Game monitor",game);
@@ -49,11 +51,19 @@ namespace MonitorStatsNative {
             var devices=new List<KeyValuePair<string,string>>{new KeyValuePair<string,string>("cpu",stats.Section("cpu").Text("model")),new KeyValuePair<string,string>("gpu",stats.Section("gpu").Text("model")),new KeyValuePair<string,string>("ram",stats.Section("ram").Text("spec"))};
             devices.AddRange(stats.Rows("drives").Select(d=>new KeyValuePair<string,string>("drive:"+d.Text("id"),d.Text("name"))));
             foreach(var device in devices){string custom;Value.Names.TryGetValue(device.Key,out custom);var box=new TextBox{Text=custom??"",Width=510};names[device.Key]=box;Add(rename,device.Value,box);}
-            var reset=new Button{Text="Reset names",AutoSize=true};reset.Click+=(s,e)=>{foreach(var box in names.Values)box.Clear();};Add(rename,"",reset);
+            var reset=new Button{Text="Reset names",AutoSize=true};reset.Click+=(s,e)=>{Value.Names.Clear();foreach(var box in names.Values)box.Clear();};Add(rename,"",reset);
             var parts=new TextBox{Name="PowerComponents",AutoSize=false,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Width=600,Height=420};
             parts.Text=String.Join(Environment.NewLine+Environment.NewLine,power.Rows("parts").Select(item=>item.Text("name")+"   "+Query.Format(item.Number("watts")," W")+"   ("+item.Text("source")+")"+Environment.NewLine+"Range "+Query.Format(item.Number("low"))+"–"+Query.Format(item.Number("high")," W")+Environment.NewLine+item.Text("detail")));
             Add(wattage,"System power",new Label{AutoSize=true,Text=Query.Format(power.Number("watts")," W")+" · "+power.Text("mode")});Add(wattage,"Components",parts);
             Add(wattage,"",new Label{AutoSize=true,MaximumSize=new Size(550,0),Text="Uninstrumented parts, external displays, and PSU loss use estimates. Exact total power requires a wall meter."});
+            var status=new TextBox{Name="SensorStatus",AutoSize=false,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Width=620,Height=490};
+            Func<string> describe=readStatus??(()=>SensorStatus.Describe(stats,power,new Data(),new Data(),Value.Poll,false,Value.Endpoint.Length>0,Value.Fps,false));
+            var refreshStatus=new Button{Text="Refresh status",AutoSize=true};
+            Action refresh=()=>{status.Text=describe();status.SelectionStart=0;status.SelectionLength=0;};
+            refreshStatus.Click+=(s,e)=>refresh();
+            Add(sensors,"Sensor sources and status",new Label{AutoSize=true,Text="Uses the latest collected readings. Refreshing this page does not scan hardware or contact online services."});
+            Add(sensors,"",refreshStatus);Add(sensors,"",status);
+            tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedTab.Text=="Sensors")refresh();};
             var footer=new FlowLayoutPanel{Dock=DockStyle.Bottom,Height=48,FlowDirection=FlowDirection.RightToLeft,Padding=new Padding(6)};
             var save=new Button{Text="Save",AutoSize=true};save.Click+=(s,e)=>Save();footer.Controls.Add(save);
             var cancel=new Button{Text="Cancel",AutoSize=true,DialogResult=DialogResult.Cancel};footer.Controls.Add(cancel);Controls.Add(footer);
@@ -93,11 +103,11 @@ namespace MonitorStatsNative {
             string endpoint=Str("endpoint").Trim();Uri address;
             if(endpoint.Length>0&&(!Uri.TryCreate(endpoint,UriKind.Absolute,out address)||address.Scheme!="http"||!Services.Private(address.Host))){MessageBox.Show(this,"Enter the ONU’s private IPv4 HTTP address.");return;}
             Value.Theme=Convert.ToString(((ComboBox)inputs["theme"]).SelectedItem);Value.Poll=Int32.Parse(Convert.ToString(((ComboBox)inputs["poll"]).SelectedItem));Value.Shift=Int32.Parse(Str("shift"))*60000;
-            Value.Startup=Bool("startup");Value.Fps=Bool("fps");Value.Cores=Bool("cores");Value.Fill=Bool("fill");Value.AutoScale=Bool("auto");
+            Value.Startup=Bool("startup");Value.Fps=Bool("fps");Value.Cores=Bool("cores");Value.Fill=Bool("fill");Value.AutoScale=Bool("auto");Value.LowPowerWhenHidden=Bool("lowPower");
             Value.Display=((Choice)((ComboBox)inputs["display"]).SelectedItem).Id;Value.GameMonitor=Int32.Parse(((Choice)((ComboBox)inputs["game"]).SelectedItem).Id);
             Value.Position=Str("position");Value.Width=Num("width");Value.Height=Num("height");Value.Scale=Num("scale");Value.Unit=Str("unit");
             Value.Endpoint=endpoint;Value.Username=Str("username").Trim();Value.Password=Str("password");
-            Value.Names.Clear();foreach(var field in names){string name=field.Value.Text.Trim();if(name.Length>0)Value.Names[field.Key]=name;}
+            foreach(var field in names){string name=field.Value.Text.Trim();if(name.Length>0)Value.Names[field.Key]=name;else Value.Names.Remove(field.Key);}
             Value.Normalize();DialogResult=DialogResult.OK;Close();
         }
     }

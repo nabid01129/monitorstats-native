@@ -59,12 +59,13 @@ namespace MonitorStatsNative {
                         var v6Task = Task.Run(() => Public("https://api6.ipify.org?format=json"));
                         Task.WaitAll(v4Task, v6Task);
                         string v4 = v4Task.Result, v6 = v6Task.Result;
-                        result["publicIPv4"] = v4; result["publicIPv6"] = v6;
+                        MergePublicAddresses(result,v4,v6);
                         string ip = String.IsNullOrEmpty(v4) ? v6 : v4;
                         if (!String.IsNullOrEmpty(ip)) {
                             Data geo = Geo(ip);
-                            result["provider"] = geo.Section("connection").Text("isp");
-                            publicSuccess = true;
+                            string provider=geo.Section("connection").Text("isp");
+                            if(provider.Length>0)result["provider"] = provider;
+                            publicSuccess = !String.IsNullOrEmpty(v4);
                         }
                         publicDeadline=DateTime.UtcNow.AddSeconds(publicSuccess?1800:30);
                     }
@@ -108,6 +109,12 @@ namespace MonitorStatsNative {
                     Notify();
                 }
             });
+        }
+        internal static void MergePublicAddresses(Data result,string v4,string v6){
+            // Keep the last successful value on a transient request failure.
+            // NetworkAddressChanged clears the entire snapshot on a new network.
+            if(!String.IsNullOrEmpty(v4))result["publicIPv4"]=v4;
+            if(!String.IsNullOrEmpty(v6))result["publicIPv6"]=v6;
         }
         static string Public(string url) {
             try { string value = Data.Json(Get(url)).Text("ip"); IPAddress ip; return IPAddress.TryParse(value, out ip) ? value : null; } catch { return null; }

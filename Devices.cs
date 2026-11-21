@@ -166,6 +166,7 @@ namespace MonitorStatsNative {
     internal static class Nvml {
         static IntPtr library, device;
         static bool attempted;
+        static readonly Dictionary<string,Delegate> functions=new Dictionary<string,Delegate>();
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr LoadLibrary(string path);
         [DllImport("kernel32.dll")] static extern IntPtr GetProcAddress(IntPtr module, string name);
         [DllImport("kernel32.dll")] static extern bool FreeLibrary(IntPtr module);
@@ -178,8 +179,10 @@ namespace MonitorStatsNative {
         [StructLayout(LayoutKind.Sequential)] struct Usage { public uint Gpu, Mem; }
         [StructLayout(LayoutKind.Sequential)] struct Memory { public ulong Total, Free, Used; }
         static T Function<T>(string name) where T : class {
+            Delegate cached;if(functions.TryGetValue(name,out cached))return cached as T;
             IntPtr ptr = GetProcAddress(library, name);
-            return ptr == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer(ptr, typeof(T)) as T;
+            var function=ptr==IntPtr.Zero?null:Marshal.GetDelegateForFunctionPointer(ptr,typeof(T));
+            functions[name]=function;return function as T;
         }
         public static Data Read() {
             var data = new Data();
@@ -212,6 +215,7 @@ namespace MonitorStatsNative {
         public static void Close() {
             device = IntPtr.Zero;
             if (library != IntPtr.Zero) { var stop = Function<Init>("nvmlShutdown"); if (stop != null) stop(); FreeLibrary(library); library = IntPtr.Zero; }
+            functions.Clear();
         }
     }
 }

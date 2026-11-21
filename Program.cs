@@ -14,7 +14,7 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr FindWindow(string className,string title);
         [DllImport("user32.dll")]static extern bool ShowWindow(IntPtr window,int command);
         [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
-        public const string Version = "1.0.15";
+        public const string Version = "1.0.21";
         [STAThread] static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;
             SetProcessDPIAware();
@@ -55,6 +55,11 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern bool EnumDisplaySettings(string device,int mode,ref Mode data);
         public static int RefreshRate(string device) { var m=new Mode();m.Size=(short)Marshal.SizeOf(typeof(Mode));return EnumDisplaySettings(device,-1,ref m)?(int)m.Frequency:60; }
         public static Screen[] Screens() { return Screen.AllScreens.OrderBy(s=>s.Primary?0:1).ThenBy(s=>s.Bounds.X).ThenBy(s=>s.Bounds.Y).ToArray(); }
+        internal static int ScreenIndex(Screen[] screens,string device){
+            int selected=Array.FindIndex(screens,s=>s.DeviceName==device);
+            if(selected<0)selected=Array.FindIndex(screens,s=>!s.Primary);
+            return Math.Max(0,selected);
+        }
         public static string Model(Screen screen) {
             if(DateTime.UtcNow>=modelsUntil){modelsUntil=DateTime.UtcNow.AddMinutes(2);models=Query.Wmi("SELECT InstanceName,UserFriendlyName FROM WmiMonitorID",@"root\wmi");}
             var device=new DisplayDevice();device.Size=Marshal.SizeOf(typeof(DisplayDevice));
@@ -78,8 +83,9 @@ namespace MonitorStatsNative {
         readonly Canvas canvas;
         readonly FlowLayoutPanel toolbar=new FlowLayoutPanel();
         readonly NotifyIcon tray;
+        readonly WindowsUpdates windowsUpdates=new WindowsUpdates();
         Data latest=new Data(), power=new Data();
-        int collecting, refreshRequested=1, pollingChanged, shiftIndex;
+        int collecting, refreshRequested=1, pollingChanged, shiftIndex, telemetryReleased, backgroundPolling;
         long nextSample, lastShift;
         long nextMemoryMaintenance;
         readonly Stopwatch uptime=Stopwatch.StartNew();
@@ -88,10 +94,12 @@ namespace MonitorStatsNative {
         long sampleCount,firstSampleAt,lastSampleAt,maxCollectionMs;
         string measurePath;int measureSeconds;long peakWorking,peakPrivate;TimeSpan initialCpu;
         bool measuredSettings;
+        readonly bool reviewMode;
+        bool settingsOpen;
         public Dashboard(string[] args) {
-            options=Options.Load();
+            options=Options.Load();reviewMode=args.Contains("--review");
             if(args.Length>=3&&args[0]=="--measure") { measurePath=Path.GetFullPath(args[1]);Int32.TryParse(args[2],out measureSeconds); options.Startup=false;if(args.Length>3&&Theme.All.Any(t=>t.Id==args[3]))options.Theme=args[3]; }
-            Text="MonitorStats Native";ShowInTaskbar=measurePath!=null;FormBorderStyle=FormBorderStyle.None;MinimumSize=new Size(380,400);
+            Text="MonitorStats Native";ShowInTaskbar=measurePath!=null||reviewMode;FormBorderStyle=FormBorderStyle.None;MinimumSize=new Size(380,400);
             Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             canvas=new Canvas(options);canvas.Dock=DockStyle.Fill;Controls.Add(canvas);
             toolbar.AutoSize=true;toolbar.AutoSizeMode=AutoSizeMode.GrowAndShrink;toolbar.WrapContents=false;toolbar.FlowDirection=FlowDirection.LeftToRight;toolbar.Padding=new Padding(0);
@@ -101,6 +109,7 @@ namespace MonitorStatsNative {
             ButtonButton("□",()=>{options.Fill=!options.Fill;ApplyLayout();});
             Controls.Add(toolbar);
             canvas.HideIpsChanged+=()=>canvas.Invalidate();
+            canvas.WindowsUpdateClicked+=()=>{try{Process.Start("ms-settings:windowsupdate");}catch(Exception error){MessageBox.Show(this,error.Message,"Could not open Windows Update");}};
             services=new Services(options);
             services.Updated+=()=> { if(!closing&&IsHandleCreated)try{BeginInvoke((Action)(()=>{canvas.Extras=services.Snapshot();canvas.Invalidate();}));}catch(InvalidOperationException){} };
             var menu=new ContextMenuStrip();
@@ -113,7 +122,7 @@ namespace MonitorStatsNative {
             tray.DoubleClick+=(s,e)=>{Show();WindowState=FormWindowState.Normal;};
             SystemEvents.DisplaySettingsChanged+=DisplaysChanged;
             clock.Interval=1000;clock.Tick+=Clock;clock.Start();
-            initialCpu=Process.GetCurrentProcess().TotalProcessorTime;
+            using(var process=Process.GetCurrentProcess())initialCpu=process.TotalProcessorTime;
             collector=new System.Threading.Timer(Collect,null,Timeout.Infinite,Timeout.Infinite);
             Shown+=(s,e)=> {
                 ApplyLayout();collector.Change(0,Timeout.Infinite);
@@ -123,16 +132,23 @@ namespace MonitorStatsNative {
                         if(Services.IsNewer(value))tray.ShowBalloonTip(5000,"MonitorStats update","A newer public release is available. Open Settings to view it.",ToolTipIcon.Info);
                     }));}catch(InvalidOperationException){}});
             };
-            Resize+=(s,e)=>{toolbar.Location=new Point(Math.Max(0,ClientSize.Width-toolbar.Width-12),6);toolbar.BringToFront();};
+            Resize+=(s,e)=>{toolbar.Location=new Point(Math.Max(0,ClientSize.Width-toolbar.Width-12),6);toolbar.BringToFront();UpdatePollingState();};
+            VisibleChanged+=(s,e)=>UpdatePollingState();
         }
-        protected override CreateParams CreateParams { get { var cp=base.CreateParams;if(measurePath==null)cp.ExStyle|=0x80;return cp; } }
+        internal static int PollInterval(int selected,bool saving){return saving?Math.Max(10000,selected):selected;}
+        void UpdatePollingState(){
+            int saving=options.LowPowerWhenHidden&&(!Visible||WindowState==FormWindowState.Minimized)?1:0;
+            clock.Interval=saving==1?10000:1000;
+            if(Interlocked.Exchange(ref backgroundPolling,saving)!=saving){Interlocked.Exchange(ref pollingChanged,1);WakeCollector();}
+        }
+        protected override CreateParams CreateParams { get { var cp=base.CreateParams;if(measurePath==null&&!reviewMode)cp.ExStyle|=0x80;return cp; } }
         void ButtonButton(string label,Action clicked) {
             var button=new Button { Text=label,AutoSize=true,FlatStyle=FlatStyle.Flat,Margin=new Padding(2),TabStop=false,Height=25 };
             button.Click+=(s,e)=>clicked();toolbar.Controls.Add(button);
         }
-        void DisplaysChanged(object s,EventArgs e) { if(!closing&&IsHandleCreated)BeginInvoke((Action)ApplyLayout); }
+        void DisplaysChanged(object s,EventArgs e) { if(!closing&&IsHandleCreated)try{BeginInvoke((Action)(()=>{if(!closing)ApplyLayout();}));}catch(InvalidOperationException){} }
         void ApplyLayout() {
-            var screens=NativeDisplay.Screens();var screen=screens.FirstOrDefault(s=>s.DeviceName==options.Display)??screens.FirstOrDefault(s=>!s.Primary)??screens[0];
+            var screens=NativeDisplay.Screens();var screen=screens[NativeDisplay.ScreenIndex(screens,options.Display)];
             options.GameMonitor=Math.Max(1,Math.Min(screens.Length,options.GameMonitor));
             Rectangle area=screen.WorkingArea;
             MinimumSize=new Size(Math.Min(380,area.Width),Math.Min(400,area.Height));
@@ -149,7 +165,13 @@ namespace MonitorStatsNative {
             return new Rectangle(x,area.Top+(area.Height-height)/2,width,height);
         }
         void OpenSettings() {
-            using(var dialog=new Settings(options,latest,power,update)) {
+            if(settingsOpen||closing)return;
+            settingsOpen=true;try{ShowSettings();}finally{settingsOpen=false;}
+        }
+        void ShowSettings() {
+            using(var dialog=new Settings(options,latest,power,update,()=>SensorStatus.Describe(latest,power,services.Snapshot(),windowsUpdates.Snapshot,
+                PollInterval(options.Poll,Volatile.Read(ref backgroundPolling)!=0),Volatile.Read(ref backgroundPolling)!=0,
+                options.Endpoint.Length>0&&options.Username.Length>0&&options.Password.Length>0,options.Fps,canvas.Fps!=null))) {
                 System.Windows.Forms.Timer preview=null;
                 if(measurePath!=null){preview=new System.Windows.Forms.Timer{Interval=15000};preview.Tick+=(s,e)=>{dialog.DialogResult=DialogResult.Cancel;dialog.Close();};preview.Start();}
                 DialogResult result;
@@ -159,34 +181,37 @@ namespace MonitorStatsNative {
                 }
                 if(result!=DialogResult.OK)return;
                 try{dialog.Value.Save();}catch(Exception error){MessageBox.Show(this,error.Message,"Settings could not be saved");return;}
-                bool changed=options.Poll!=dialog.Value.Poll;
+                bool changed=options.Poll!=dialog.Value.Poll||options.LowPowerWhenHidden!=dialog.Value.LowPowerWhenHidden;
                 options=dialog.Value;
-                services.Configure(options);ApplyLayout();
+                services.Configure(options);ApplyLayout();UpdatePollingState();
                 if(changed){Interlocked.Exchange(ref pollingChanged,1);WakeCollector();}
             }
         }
         void WakeCollector(){if(closing)return;try{collector.Change(0,Timeout.Infinite);}catch(ObjectDisposedException){}}
         void RequestRefresh(){Interlocked.Exchange(ref refreshRequested,1);WakeCollector();}
         internal static long NextDeadline(long deadline,long now,int interval){if(interval<=0)throw new ArgumentOutOfRangeException("interval");return deadline>now?deadline:deadline+((now-deadline)/interval+1)*interval;}
+        void ReleaseTelemetry(){if(Interlocked.Exchange(ref telemetryReleased,1)==0)telemetry.Dispose();}
         void Collect(object state) {
             if(closing||Interlocked.Exchange(ref collecting,1)!=0)return;
             try {
                 bool refresh=Interlocked.Exchange(ref refreshRequested,0)!=0;
                 if(refresh) {telemetry.Refresh();services.Refresh();nextSample=0;}
+                windowsUpdates.Tick(refresh);
                 if(Interlocked.Exchange(ref pollingChanged,0)!=0)nextSample=0;
                 if(uptime.ElapsedMilliseconds>=nextSample) {
-                    int interval=options.Poll;
+                    int interval=PollInterval(options.Poll,Volatile.Read(ref backgroundPolling)!=0);
                     nextSample=NextDeadline(nextSample,uptime.ElapsedMilliseconds,interval);
                     long started=uptime.ElapsedMilliseconds;
                     var sample=telemetry.Read();
                     if(measurePath!=null){long completed=uptime.ElapsedMilliseconds;if(sampleCount==0)firstSampleAt=completed;lastSampleAt=completed;sampleCount++;maxCollectionMs=Math.Max(maxCollectionMs,completed-started);}
                     services.Tick(sample.Section("network"));
                     var estimate=Power.Read(sample,NativeDisplay.Screens());
-                    if(!closing)BeginInvoke((Action)(()=>{latest=sample;power=estimate;canvas.Stats=sample;canvas.Power=estimate;canvas.Invalidate();}));
+                    if(!closing)BeginInvoke((Action)(()=>{latest=sample;power=estimate;canvas.Stats=sample;canvas.Power=estimate;canvas.WindowsUpdate=windowsUpdates.Snapshot;canvas.Invalidate();}));
                 }
             } catch(Exception error) { Program.Log(error.ToString()); }
             finally {
                 Interlocked.Exchange(ref collecting,0);
+                if(closing)ReleaseTelemetry();
                 if(!closing)try{int delay=Volatile.Read(ref refreshRequested)!=0||Volatile.Read(ref pollingChanged)!=0?1:(int)Math.Max(1,Math.Min(Int32.MaxValue,nextSample-uptime.ElapsedMilliseconds));collector.Change(delay,Timeout.Infinite);}catch(ObjectDisposedException){}
             }
         }
@@ -196,7 +221,7 @@ namespace MonitorStatsNative {
                 if(GC.GetTotalMemory(false)>8*1048576)GC.Collect(2,GCCollectionMode.Optimized,false);
             }
             if(Visible&&WindowState!=FormWindowState.Minimized){
-                double? fps,ms;string game=ForegroundMonitor.Sample(options.GameMonitor,out fps,out ms);
+                double? fps=null,ms=null;string game=options.Fps?ForegroundMonitor.Sample(options.GameMonitor,out fps,out ms):null;
                 canvas.Game=game;canvas.Fps=fps;canvas.RecordFrame(ms);canvas.RefreshClock();
             }
             if(uptime.ElapsedMilliseconds-lastShift>=options.Shift){lastShift=uptime.ElapsedMilliseconds;canvas.Shift=++shiftIndex%9;canvas.Invalidate();}
@@ -227,10 +252,10 @@ namespace MonitorStatsNative {
             }
         }
         protected override void OnFormClosing(FormClosingEventArgs e) {
-            closing=true;clock.Stop();collector.Dispose();services.Dispose();
+            closing=true;clock.Stop();collector.Dispose();services.Dispose();windowsUpdates.Dispose();
             SystemEvents.DisplaySettingsChanged-=DisplaysChanged;tray.Visible=false;tray.Dispose();clock.Dispose();
             // The in-flight collector owns its native handles until it exits.
-            if(Volatile.Read(ref collecting)==0)telemetry.Dispose();
+            if(Volatile.Read(ref collecting)==0)ReleaseTelemetry();
             base.OnFormClosing(e);
         }
     }

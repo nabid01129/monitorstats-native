@@ -28,21 +28,27 @@ namespace MonitorStatsNative {
     internal sealed class Canvas : Control {
         public Options Options;
         public Data Stats=new Data(),Extras=new Data(),Power=new Data();
+        public Data WindowsUpdate=new Data();
         public string Game; public double? Fps;
         public int Shift;
         public event Action HideIpsChanged;
+        public event Action WindowsUpdateClicked;
         bool showIps=true;
         readonly Queue<double?> frames=new Queue<double?>();
-        readonly Dictionary<string,Font> fonts=new Dictionary<string,Font>();
+        readonly Dictionary<int,Font> fonts=new Dictionary<int,Font>();
+        readonly Dictionary<int,SolidBrush> brushes=new Dictionary<int,SolidBrush>();
+        readonly StringFormat textFormat=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap};
+        Theme selectedTheme;string selectedThemeId;
         string fontFamily;
         float textZoom=1f;
         readonly string windowsVersion;
         Rectangle hideButton;
+        Rectangle windowsUpdateButton;
+        Rectangle windowsUpdateSummaryButton;
         Rectangle clockRegion;
-        int leftScroll,rightScroll;
-        int leftScrollMax,rightScrollMax;
         List<Card>[] cachedColumns;
         Data cachedStats,cachedExtras,cachedPower;
+        Data cachedWindowsUpdate;
         Options cachedOptions;
         bool cachedShowIps;
         public Canvas(Options options){
@@ -65,13 +71,20 @@ namespace MonitorStatsNative {
         public void RecordFrame(double? ms){frames.Enqueue(ms);while(frames.Count>90)frames.Dequeue();}
         public void RefreshClock(){if(clockRegion.IsEmpty)Invalidate();else Invalidate(clockRegion);}
         void ClearFonts(){foreach(var font in fonts.Values)font.Dispose();fonts.Clear();}
+        Theme CurrentTheme(){
+            if(selectedTheme==null||selectedThemeId!=Options.Theme){
+                selectedTheme=Theme.Find(Options.Theme);selectedThemeId=Options.Theme;
+                foreach(var brush in brushes.Values)brush.Dispose();brushes.Clear();
+            }
+            return selectedTheme;
+        }
+        SolidBrush BrushFor(Color color){SolidBrush brush;int key=color.ToArgb();if(!brushes.TryGetValue(key,out brush)){brush=new SolidBrush(color);brushes[key]=brush;}return brush;}
         Font FontFor(float size,bool bold=false,bool applyZoom=true){
-            var theme=Theme.Find(Options.Theme);
+            var theme=CurrentTheme();
             if(fontFamily!=theme.Family){ClearFonts();fontFamily=theme.Family;}
             if(applyZoom)size*=textZoom;
-            size=Math.Max(1,(float)Math.Round(size*4)/4);
-            string key=size.ToString(System.Globalization.CultureInfo.InvariantCulture)+(bold?"b":"r");Font fnt;
-            if(!fonts.TryGetValue(key,out fnt)){fnt=new Font(theme.Family,size,bold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Pixel);fonts[key]=fnt;}
+            int quarter=Math.Max(4,(int)Math.Round(size*4)),key=quarter*2+(bold?1:0);Font fnt;
+            if(!fonts.TryGetValue(key,out fnt)){fnt=new Font(theme.Family,quarter/4f,bold?FontStyle.Bold:FontStyle.Regular,GraphicsUnit.Pixel);fonts[key]=fnt;}
             return fnt;
         }
         new static Line Text(string text,bool bold=false){return new Line("",text,bold);}
@@ -84,7 +97,8 @@ namespace MonitorStatsNative {
             system.ClockText=Text(DateTime.Now.ToString("h:mm:ss tt"),true);
             system.DateText=Text(DateTime.Now.ToString("dddd, MMM d, yyyy"));
             system.Add(system.ClockText,Text(windowsVersion));
-            system.Add(system.DateText);
+            system.Add(system.DateText,Text(WindowsUpdate.Text("heading"),true));
+            if(WindowsUpdate.Text("heading").Length>0)system.Add(Text(WindowsUpdate.Text("summary")));
             var batteries=Stats.Rows("batteries").OrderBy(b=>b.Text("category"),StringComparer.OrdinalIgnoreCase).ThenBy(b=>b.Text("name"),StringComparer.OrdinalIgnoreCase).Select(b=>new Line("",b.Number("batteryPercent").HasValue?Query.Format(b.Number("batteryPercent"),"%",0):b.Text("batteryLevel")=="Connected"?"—":b.Text("batteryLevel"),true){Icon=b.Text("category")}).ToArray();
             for(int i=0;i<batteries.Length;i+=4)system.Add(batteries.Skip(i).Take(4).ToArray());
             left.Add(system);
@@ -149,10 +163,10 @@ namespace MonitorStatsNative {
         string GameLabel(){return !String.IsNullOrWhiteSpace(Game)?Game:Fps.HasValue?"Game process unavailable":"Waiting for game frames from RTSS";}
         protected override void OnPaint(PaintEventArgs e) {
             base.OnPaint(e);
-            var g=e.Graphics;var theme=Theme.Find(Options.Theme);using(var background=new SolidBrush(theme.Background))g.FillRectangle(background,e.ClipRectangle);g.SmoothingMode=SmoothingMode.AntiAlias;
+            var g=e.Graphics;var theme=CurrentTheme();g.FillRectangle(BrushFor(theme.Background),e.ClipRectangle);g.SmoothingMode=SmoothingMode.AntiAlias;
             if(fonts.Count>128)ClearFonts();
-            if(cachedColumns==null||cachedStats!=Stats||cachedExtras!=Extras||cachedPower!=Power||cachedOptions!=Options||cachedShowIps!=showIps){
-                cachedColumns=Build();cachedStats=Stats;cachedExtras=Extras;cachedPower=Power;cachedOptions=Options;cachedShowIps=showIps;
+            if(cachedColumns==null||cachedStats!=Stats||cachedExtras!=Extras||cachedPower!=Power||cachedWindowsUpdate!=WindowsUpdate||cachedOptions!=Options||cachedShowIps!=showIps){
+                cachedColumns=Build();cachedStats=Stats;cachedExtras=Extras;cachedPower=Power;cachedWindowsUpdate=WindowsUpdate;cachedOptions=Options;cachedShowIps=showIps;
             }else{
                 var system=cachedColumns[0][0];
                 system.ClockText.Text=DateTime.Now.ToString("h:mm:ss tt");system.DateText.Text=DateTime.Now.ToString("dddd, MMM d, yyyy");
@@ -169,18 +183,18 @@ namespace MonitorStatsNative {
             g.ScaleTransform(scale,scale);
             int dx=(Shift%3-1)*2,dy=(Shift/3-1)*2;g.TranslateTransform(dx,dy);
             float columnWidth=(width-36)/2;
-            clockRegion=Rectangle.Empty;hideButton=Rectangle.Empty;
+            clockRegion=Rectangle.Empty;hideButton=Rectangle.Empty;windowsUpdateButton=Rectangle.Empty;windowsUpdateSummaryButton=Rectangle.Empty;
             for(int c=0;c<2;c++){
                 float total=columns[c].Sum(card=>card.Height);
                 // Fit cards within the monitor; the user scale adjusts text independently.
                 float fit=Math.Max(0.001f,Math.Min(1,(height-50-columns[c].Count*10)/total));
-                int maximum=0;
-                if(c==0){leftScrollMax=maximum;leftScroll=Math.Min(leftScroll,maximum);}else{rightScrollMax=maximum;rightScroll=Math.Min(rightScroll,maximum);}
-                float x=12+c*(columnWidth+12),y=40-(c==0?leftScroll:rightScroll);
+                float x=12+c*(columnWidth+12),y=40;
                 foreach(var card in columns[c]){
                     float h=card.Height*fit;
                     var pixels=Rectangle.Ceiling(new RectangleF((x+dx)*scale,(y+dy)*scale,columnWidth*scale,h*scale));
                     if(c==0&&card.Clock)clockRegion=pixels;
+                    if(card.Clock&&WindowsUpdate.Text("heading").Length>0)windowsUpdateButton=Rectangle.Intersect(ClientRectangle,Rectangle.Ceiling(new RectangleF((x+columnWidth/2+dx)*scale,(y+37*fit+dy)*scale,(columnWidth/2-12)*scale,(h-37*fit)*scale)));
+                    if(card.Clock&&WindowsUpdate.Text("summary").Length>0)windowsUpdateSummaryButton=Rectangle.Intersect(ClientRectangle,Rectangle.Ceiling(new RectangleF((x+12+dx)*scale,(y+87*fit+dy)*scale,(columnWidth-24)*scale,25*fit*scale)));
                     if(c==0&&card.Graph)clockRegion=Rectangle.Union(clockRegion,pixels);
                     if(card.Title=="Network"){
                         PointF[] points={new PointF(x+columnWidth-75,y+6*fit),new PointF(x+columnWidth-10,y+28*fit)};
@@ -197,7 +211,7 @@ namespace MonitorStatsNative {
                 float radius=theme.Radius*fit*2;
                 if(radius>0){outline.AddArc(box.Left,box.Top,radius,radius,180,90);outline.AddArc(box.Right-radius,box.Top,radius,radius,270,90);outline.AddArc(box.Right-radius,box.Bottom-radius,radius,radius,0,90);outline.AddArc(box.Left,box.Bottom-radius,radius,radius,90,90);outline.CloseFigure();}
                 else outline.AddRectangle(box);
-                using(var brush=new SolidBrush(theme.Panel))g.FillPath(brush,outline);
+                g.FillPath(BrushFor(theme.Panel),outline);
                 using(var pen=new Pen(theme.Border)){if(theme.BorderStyle=="dashed")pen.DashStyle=DashStyle.Dash;g.DrawPath(pen,outline);if(theme.BorderStyle=="double")g.DrawRectangle(pen,box.X+3,box.Y+3,box.Width-6,box.Height-6);}
             }
             float y=box.Y+12*fit;DrawText(g,card.Title.ToUpperInvariant(),FontFor(12*fit,true),theme.Accent,new RectangleF(box.X+12,y,box.Width-24,20*fit));y+=25*fit;
@@ -217,7 +231,7 @@ namespace MonitorStatsNative {
                             float badgeWidth=g.MeasureString(line.Badge,badgeFont).Width+6*fit;
                             var badge=new RectangleF(x+captionWidth+4*fit,y-1*fit,badgeWidth,14*fit);
                             bool shared=line.Badge=="Shared IP";
-                            using(var background=new SolidBrush(shared?Color.FromArgb(69,10,10):Color.FromArgb(6,78,59)))g.FillRectangle(background,badge);
+                            g.FillRectangle(BrushFor(shared?Color.FromArgb(69,10,10):Color.FromArgb(6,78,59)),badge);
                             DrawText(g,line.Badge,badgeFont,shared?Color.FromArgb(252,165,165):Color.FromArgb(110,231,183),new RectangleF(badge.X+3*fit,badge.Y+1*fit,badge.Width-4*fit,badge.Height));
                         }
                         DrawText(g,line.Text,FontFor(14*fit,line.Strong),line.Color??theme.Text,new RectangleF(x,y+15*fit,w-4,24*fit));
@@ -225,7 +239,7 @@ namespace MonitorStatsNative {
                         float size=card.Clock&&card.Rows.IndexOf(row)==0&&i==0?24*fit:line.Strong?14*fit:12*fit;
                         if(line.Icon!=null){DrawIcon(g,line.Icon,x,y,13*fit,theme);x+=19*fit;}
                         float iconOffset=line.Icon!=null?19*fit:0;
-                        DrawText(g,line.Text,FontFor(size,line.Strong),line.Color??(line.Strong?theme.Text:theme.Muted),new RectangleF(x,y,w-4-iconOffset,25*fit),line.Strong||card.Title.StartsWith("Storage"));
+                        DrawText(g,line.Text,FontFor(size,line.Strong),line.Color??(line.Strong?theme.Text:theme.Muted),new RectangleF(x,y,w-4-iconOffset,25*fit));
                     }
                 }
                 y+=(row.Any(l=>l.Caption.Length>0)?44:25)*fit;
@@ -258,20 +272,20 @@ namespace MonitorStatsNative {
                 else g.DrawRectangle(pen,x+size/4,y,size/2,size);
             }
         }
-        void DrawText(Graphics g,string value,Font font,Color color,RectangleF box,bool fit=false){
+        void DrawText(Graphics g,string value,Font font,Color color,RectangleF box){
             if(String.IsNullOrEmpty(value)||box.Width<=0||box.Height<=0)return;
-            using(var brush=new SolidBrush(color))using(var format=new StringFormat { Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap }) {
+            {
                 // IPv6 scales down within its full-width row.
                 SizeF measured=g.MeasureString(value,font);
                 float shrink=Math.Min(1,Math.Min(box.Width/Math.Max(1,measured.Width)*0.98f,box.Height/Math.Max(1,font.GetHeight(g))));
-                g.DrawString(value,shrink<1?FontFor(font.Size*shrink,font.Bold,false):font,brush,box,format);
+                g.DrawString(value,shrink<1?FontFor(font.Size*shrink,font.Bold,false):font,BrushFor(color),box,textFormat);
             }
         }
-        static void DrawBar(Graphics g,RectangleF box,double percent,Theme theme){
-            using(var background=new SolidBrush(theme.Border))g.FillRectangle(background,box);
-            using(var brush=new SolidBrush(theme.Accent))g.FillRectangle(brush,box.X,box.Y,box.Width*(float)Math.Max(0,Math.Min(100,percent))/100,box.Height);
+        void DrawBar(Graphics g,RectangleF box,double percent,Theme theme){
+            g.FillRectangle(BrushFor(theme.Border),box);
+            g.FillRectangle(BrushFor(theme.Accent),box.X,box.Y,box.Width*(float)Math.Max(0,Math.Min(100,percent))/100,box.Height);
         }
-        protected override void OnMouseDown(MouseEventArgs e){base.OnMouseDown(e);if(hideButton.Contains(e.Location)){showIps=!showIps;var h=HideIpsChanged;if(h!=null)h();Invalidate();}}
-        protected override void Dispose(bool disposing){if(disposing)foreach(var font in fonts.Values)font.Dispose();base.Dispose(disposing);}
+        protected override void OnMouseDown(MouseEventArgs e){base.OnMouseDown(e);if(e.Button!=MouseButtons.Left)return;if(windowsUpdateButton.Contains(e.Location)||windowsUpdateSummaryButton.Contains(e.Location)){var update=WindowsUpdateClicked;if(update!=null)update();return;}if(hideButton.Contains(e.Location)){showIps=!showIps;var h=HideIpsChanged;if(h!=null)h();Invalidate();}}
+        protected override void Dispose(bool disposing){if(disposing){ClearFonts();foreach(var brush in brushes.Values)brush.Dispose();brushes.Clear();textFormat.Dispose();}base.Dispose(disposing);}
     }
 }

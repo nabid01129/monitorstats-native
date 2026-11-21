@@ -26,6 +26,7 @@ namespace MonitorStatsNative {
         readonly byte[] text = new byte[260];
         CpuTime[] previous;
         bool closed;
+        readonly Func<Data> readNetwork;
         [StructLayout(LayoutKind.Sequential)] struct CpuTime { public long Idle, Kernel, User, Dpc, Interrupt; public uint Count; }
         [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int info, [Out] CpuTime[] data, int size, out int length);
         [DllImport("iphlpapi.dll")] static extern int GetBestInterface(uint destination, out uint index);
@@ -36,7 +37,7 @@ namespace MonitorStatsNative {
             due[key] = DateTime.UtcNow.AddSeconds(seconds); return true;
         }
         public void Refresh() { due.Clear(); battery.Refresh(); }
-        public Telemetry() { }
+        public Telemetry() { readNetwork=NetworkCore; }
         public Data Read() {
             if (closed) return new Data();
             if (Due("identity", 120)) Inventory();
@@ -47,6 +48,7 @@ namespace MonitorStatsNative {
             var cpuNow = cpu.Copy(); var gpuNow = gpu.Copy();
             var loads = CpuLoads();
             cpuNow["loadPercent"] = loads.Length == 0 ? (double?)null : loads.Average();
+            if(loads.Length>0)cpuNow["loadPercentSource"]="Windows";
             cpuNow["cores"] = loads;
             cpuNow["coreTempsC"] = new double[0];
             Fill(cpuNow, sensors, "loadPercent", @"^CPU( total)? usage$");
@@ -56,6 +58,10 @@ namespace MonitorStatsNative {
             var cores = sensors.Where(s => Query.Match(s.Text("name"), @"^CPU\d+ usage$")).OrderBy(SensorIndex).Select(s => s.Number("value").Value).ToArray();
             if (cores.Length > 0) cpuNow["cores"] = cores;
             cpuNow["coreTempsC"] = sensors.Where(s => Query.Match(s.Text("name"), @"^CPU\d+ temperature$")).OrderBy(SensorIndex).Select(s => s.Number("value").Value).ToArray();
+            var coreClocks=sensors.Where(s=>Query.Match(s.Text("name"),@"^CPU\d+ clock$")).Select(s=>s.Number("value").Value).ToArray();
+            var coreTemperatures=(double[])cpuNow["coreTempsC"];
+            if(!cpuNow.Number("clockMHz").HasValue&&coreClocks.Length>0){cpuNow["clockMHz"]=coreClocks.Average();cpuNow["clockMHzSource"]="MSI Afterburner (core average)";}
+            if(!cpuNow.Number("tempC").HasValue&&coreTemperatures.Length>0){cpuNow["tempC"]=coreTemperatures.Max();cpuNow["tempCSource"]="MSI Afterburner (core maximum)";}
             var gp = sensors.Where(s => Query.Match(s.Text("name"), @"^GPU1? ")).ToList();
             Fill(gpuNow, gp, "coreLoadPercent", @"^GPU\d* usage$");
             Fill(gpuNow, gp, "coreMHz", @"^GPU\d* (core )?clock$");
@@ -65,9 +71,9 @@ namespace MonitorStatsNative {
             Fill(gpuNow, gp, "fanRPM", @"fan tachometer$");
             Fill(gpuNow, gp, "watt", @"power$");
             var gpuMemory = gp.FirstOrDefault(s => Query.Match(s.Text("name"), @"memory usage$"));
-            if (gpuMemory != null) gpuNow["vramUsedGB"] = gpuMemory.Number("value") / (gpuMemory.Text("units") == "GB" ? 1 : 1024);
+            if (gpuMemory != null){gpuNow["vramUsedGB"] = gpuMemory.Number("value") / (gpuMemory.Text("units") == "GB" ? 1 : 1024);gpuNow["vramUsedGBSource"]="MSI Afterburner";}
             if (new[] {"coreLoadPercent","coreMHz","vramMHz","tempC","fanPercent","watt","vramUsedGB"}.Any(key=>gpuNow.Get(key)==null)) {
-                foreach (var item in Nvml.Read()) if (gpuNow.Get(item.Key) == null) gpuNow[item.Key] = item.Value;
+                foreach (var item in Nvml.Read()) if (gpuNow.Get(item.Key) == null){gpuNow[item.Key] = item.Value;gpuNow[item.Key+"Source"]="NVIDIA driver (NVML)";}
             }
             var fans = sensors.Where(s => Query.Match(s.Text("name"), "fan") && Query.Match(s.Text("units"), "RPM|%")).ToList();
             if (!fans.Any(s => Query.Match(s.Text("name"), "CPU")) || gpuNow.Get("fanRPM") == null) {
@@ -78,8 +84,8 @@ namespace MonitorStatsNative {
                 if (identities.TryGetValue("fans", out fanData)) foreach (var fan in fanData.Rows("fans")) {
                     bool isGpu=Query.Match(fan.Text("name"),"gpu|nvidia|geforce|radeon");
                     if(isGpu&&gpuNow.Get("fanRPM")!=null)continue;
-                    if (!fans.Any(s => s.Text("name").Equals(fan.Text("name"), StringComparison.OrdinalIgnoreCase))) fans.Add(fan);
-                    if (gpuNow.Get("fanRPM") == null && isGpu) gpuNow["fanRPM"] = fan.Number("value");
+                    if (!fans.Any(s => s.Text("name").Equals(fan.Text("name"), StringComparison.OrdinalIgnoreCase))){var copy=fan.Copy();copy["source"]="Fan Control (fallback)";fans.Add(copy);}
+                    if (gpuNow.Get("fanRPM") == null && isGpu){gpuNow["fanRPM"] = fan.Number("value");gpuNow["fanRPMSource"]="Fan Control (fallback)";}
                 }
             }
             var status = MonitorStatsMemory.Read();
@@ -99,6 +105,7 @@ namespace MonitorStatsNative {
                 return copy;
             }).ToArray();
             var result = Data.Of("cpu", cpuNow, "gpu", gpuNow, "ram", ram, "drives", drives, "fans", fans.ToArray(), "motherboard", board, "peripherals", peripherals.ToArray(), "network", Network(), "batteries", battery.Snapshot, "status", "live");
+            result["sampledAtUtc"]=DateTime.UtcNow;result["afterburnerSensorCount"]=sensors.Count;
             var power = sensors.FirstOrDefault(s => Query.Match(s.Text("units"), @"^(W|watts?)$") && Query.Match(s.Text("name"), @"^(whole system power|total system power|system total power|total (pc|computer) power|(psu|power supply) (output )?power|ac input power|wall power)$"));
             if (power != null) { result["systemPowerW"] = power.Number("value"); result["systemPowerKind"] = Query.Match(power.Text("name"), "whole|system total|total system") ? "whole-system" : Query.Match(power.Text("name"), "ac input|wall") ? "pc-input" : "pc-output"; }
             return result;
@@ -106,7 +113,7 @@ namespace MonitorStatsNative {
         static int SensorIndex(Data s) { var m = Regex.Match(s.Text("name"), @"\d+"); return m.Success ? Int32.Parse(m.Value) : 0; }
         static void Fill(Data target, IEnumerable<Data> sensors, string field, string pattern) {
             var value = sensors.FirstOrDefault(s => Query.Match(s.Text("name"), pattern));
-            if (value != null) target[field] = value.Number("value");
+            if (value != null){target[field] = value.Number("value");target[field+"Source"]="MSI Afterburner";}
         }
         double[] CpuLoads() {
             var data = new CpuTime[Environment.ProcessorCount];
@@ -190,15 +197,29 @@ namespace MonitorStatsNative {
                         mah.ReadArray(offset + 260, text, 0, 260); string unit = Encoding.ASCII.GetString(text).Trim('\0', ' ');
                         double value = mah.ReadSingle(offset + 1300); uint gpuIndex = mah.ReadUInt32(offset + 1316);
                         if (Double.IsNaN(value) || Double.IsInfinity(value) || Math.Abs(value) > 3e38 || name.Length == 0) continue;
-                        if (gpuIndex < 16 && !Query.Match(name, @"^GPU\d+")) name = "GPU" + (gpuIndex + 1) + " " + name;
-                        result.Add(Data.Of("name", name, "units", unit, "value", value));
+                        name=SensorName(name,gpuIndex);
+                        result.Add(Data.Of("name", name, "units", unit, "value", value,"source","MSI Afterburner"));
                     }
                 }
             } catch { DisconnectAfterburner();due["afterburner"]=DateTime.UtcNow.AddSeconds(5); }
             return result;
         }
+        internal static string SensorName(string name,uint index){
+            // The publisher also uses its index field for CPU cores and RAM.
+            // Only unnamed GPU channels need a GPU prefix.
+            return index<16&&!Query.Match(name,@"^GPU\d+|^CPU(?:\d+)?(?:\s|$)|^RAM(?:\s|$)|^Commit charge$|^Framerate$|^Frametime$")?"GPU"+(index+1)+" "+name:name;
+        }
         void DisconnectAfterburner(){var view=mah;var mapping=mahMap;mah=null;mahMap=null;if(view!=null)view.Dispose();if(mapping!=null)mapping.Dispose();}
         Data Network() {
+            return NetworkSnapshot(readNetwork);
+        }
+        internal static Data NetworkSnapshot(Func<Data> read){
+            try{return read();}
+            catch(NetworkInformationException){return new Data();}
+            catch(SocketException){return new Data();}
+            catch(InvalidOperationException){return new Data();}
+        }
+        Data NetworkCore() {
             uint best; GetBestInterface(0x08080808, out best);
             var interfaces=NetworkInterface.GetAllNetworkInterfaces();
             var current = interfaces.Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback).OrderBy(n => {

@@ -1,12 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Threading;
 using System.Web.Script.Serialization;
 
 internal static partial class FanControlReader
@@ -143,36 +141,4 @@ internal static partial class FanControlReader
         catch { return "{\"fans\":[]}"; }
     }
 
-    private static int UnusedEntry(string[] args)
-    {
-        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
-        var interval = 1000;
-        int parsed;
-        if (args.Length > 0 && Int32.TryParse(args[0], out parsed)) interval = Math.Max(1000, Math.Min(10000, parsed));
-        Initialize();
-        var fans = ReadConfiguredFans();
-        var intervalTicks = Math.Max(1L, (long)Math.Round(interval * (double)Stopwatch.Frequency / 1000.0));
-        var nextCycleAt = 0L;
-        var firstCycle = true;
-        while (true)
-        {
-            var cycleStartedAt = Stopwatch.GetTimestamp();
-            Console.WriteLine(ReadJson(fans));
-            Console.Out.Flush();
-            var nowTicks = Stopwatch.GetTimestamp();
-            if (firstCycle)
-            {
-                nextCycleAt = cycleStartedAt;
-                firstCycle = false;
-            }
-            nextCycleAt += intervalTicks;
-            if (nextCycleAt <= nowTicks)
-            {
-                var missedIntervals = (long)Math.Floor((nowTicks - nextCycleAt) / (double)intervalTicks) + 1;
-                nextCycleAt += missedIntervals * intervalTicks;
-            }
-            var remainingMs = (int)Math.Floor((nextCycleAt - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-            if (remainingMs > 0) Thread.Sleep(remainingMs);
-        }
-    }
 }

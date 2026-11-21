@@ -22,8 +22,18 @@ namespace MonitorStatsNative {
         public object Get(string key) { object value; return TryGetValue(key, out value) ? value : null; }
         public string Text(string key) { return Convert.ToString(Get(key), CultureInfo.InvariantCulture); }
         public double? Number(string key) {
+            object raw=Get(key);if(raw==null)return null;
             double value;
-            return Get(key) != null && Double.TryParse(Text(key), NumberStyles.Float, CultureInfo.InvariantCulture, out value) && !Double.IsInfinity(value) && !Double.IsNaN(value) ? (double?)value : null;
+            switch(raw is Enum?TypeCode.Object:Type.GetTypeCode(raw.GetType())){
+                case TypeCode.Byte:case TypeCode.SByte:case TypeCode.Int16:case TypeCode.UInt16:
+                case TypeCode.Int32:case TypeCode.UInt32:case TypeCode.Int64:case TypeCode.UInt64:
+                case TypeCode.Single:case TypeCode.Double:case TypeCode.Decimal:
+                    value=Convert.ToDouble(raw,CultureInfo.InvariantCulture);break;
+                default:
+                    if(!Double.TryParse(Convert.ToString(raw,CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out value))return null;
+                    break;
+            }
+            return !Double.IsInfinity(value)&&!Double.IsNaN(value)?(double?)value:null;
         }
         public Data Section(string key) { return Get(key) as Data ?? new Data(); }
         public Data Copy() { var copy = new Data(); foreach (var pair in this) copy[pair.Key] = pair.Value; return copy; }
@@ -44,6 +54,7 @@ namespace MonitorStatsNative {
         public string Theme = "classic", Display = "", Position = "center", Unit = "Mbps";
         public int Poll = 3000, Width = 75, Height = 75, Scale = 100, Shift = 300000, GameMonitor = 1;
         public bool Fill = true, AutoScale = true, Startup = false, Fps = true, Cores = true;
+        public bool LowPowerWhenHidden = false;
         public Dictionary<string, string> Names = new Dictionary<string, string>();
         public string Endpoint = "", Username = "", Password = "";
         public static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MonitorStats Native");
@@ -86,6 +97,8 @@ namespace MonitorStatsNative {
         public string Name(string key, string detected) { string value; return Names.TryGetValue(key, out value) && !String.IsNullOrWhiteSpace(value) ? value : detected; }
     }
     internal static class Query {
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<string,System.Text.RegularExpressions.Regex> patterns=new System.Collections.Concurrent.ConcurrentDictionary<string,System.Text.RegularExpressions.Regex>();
+        static readonly Func<string,System.Text.RegularExpressions.Regex> createPattern=expression=>new System.Text.RegularExpressions.Regex(expression,System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         public static List<Data> Wmi(string query, string scope = @"root\cimv2") {
             var result = new List<Data>();
             try {
@@ -100,7 +113,12 @@ namespace MonitorStatsNative {
             } catch { }
             return result;
         }
-        public static bool Match(string text, string expression) { return System.Text.RegularExpressions.Regex.IsMatch(text ?? "", expression, System.Text.RegularExpressions.RegexOptions.IgnoreCase); }
+        public static bool Match(string text, string expression) {
+            System.Text.RegularExpressions.Regex pattern;
+            if(patterns.TryGetValue(expression,out pattern))return pattern.IsMatch(text??"");
+            if(patterns.Count<128)return patterns.GetOrAdd(expression,createPattern).IsMatch(text??"");
+            return System.Text.RegularExpressions.Regex.IsMatch(text??"",expression,System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
         public static string Format(double? value, string unit = "", int digits = 1) { return value.HasValue ? value.Value.ToString("N" + digits, CultureInfo.CurrentCulture) + unit : ""; }
     }
 }
