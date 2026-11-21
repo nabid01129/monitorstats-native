@@ -14,7 +14,7 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr FindWindow(string className,string title);
         [DllImport("user32.dll")]static extern bool ShowWindow(IntPtr window,int command);
         [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
-        public const string Version = "1.0.14";
+        public const string Version = "1.0.15";
         [STAThread] static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;
             SetProcessDPIAware();

@@ -177,7 +177,10 @@ namespace MonitorStatsNative {
                     mahMap = MemoryMappedFile.OpenExisting("MAHMSharedMemory", MemoryMappedFileRights.Read);
                     mah = mahMap.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
                 }
-                if (mah != null && mah.Capacity >= 28 && mah.ReadUInt32(0) == 0x4D41484D) {
+                if (mah != null) {
+                    // MSI marks an unloaded publisher as DEAD. Holding that
+                    // mapping prevents recovery when Afterburner restarts.
+                    if(mah.Capacity<28||mah.ReadUInt32(0)!=0x4D41484D){DisconnectAfterburner();due["afterburner"]=DateTime.UtcNow.AddSeconds(5);return result;}
                     int header = (int)mah.ReadUInt32(8), count = Math.Min(512, (int)mah.ReadUInt32(12)), size = (int)mah.ReadUInt32(16);
                     if (header < 28 || size < 1324) throw new IOException();
                     for (int i = 0; i < count; i++) {
@@ -191,9 +194,10 @@ namespace MonitorStatsNative {
                         result.Add(Data.Of("name", name, "units", unit, "value", value));
                     }
                 }
-            } catch { if (mah != null) mah.Dispose(); if (mahMap != null) mahMap.Dispose(); mah = null; mahMap = null; }
+            } catch { DisconnectAfterburner();due["afterburner"]=DateTime.UtcNow.AddSeconds(5); }
             return result;
         }
+        void DisconnectAfterburner(){var view=mah;var mapping=mahMap;mah=null;mahMap=null;if(view!=null)view.Dispose();if(mapping!=null)mapping.Dispose();}
         Data Network() {
             uint best; GetBestInterface(0x08080808, out best);
             var interfaces=NetworkInterface.GetAllNetworkInterfaces();
@@ -230,7 +234,7 @@ namespace MonitorStatsNative {
         }
         public void Dispose() {
             closed = true;
-            if (mah != null) mah.Dispose(); if (mahMap != null) mahMap.Dispose();
+            DisconnectAfterburner();
             battery.Dispose();
             ForegroundMonitor.CloseRtss(); Nvml.Close();
         }

@@ -1,5 +1,13 @@
 # Native edition changes
 
+## 1.0.15
+
+- Release Afterburner shared-memory mappings marked DEAD or otherwise invalid instead of holding them indefinitely.
+- Retry the sensor connection with a five-second backoff after a publisher restart or feed failure.
+- Use the same disconnect path for failures and shutdown.
+- Add an isolated dead-feed and recovered-feed integration test, alongside existing rendering, polling and battery checks.
+- Preserve existing sensor priorities and avoid introducing additional sensor providers.
+
 ## 1.0.14
 
 - Isolate slow wireless battery I/O from CPU, GPU, RAM and network collection using one bounded in-process worker.

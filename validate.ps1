@@ -182,8 +182,8 @@ class Checks {
                 if((string)optionsType.GetField("Theme").GetValue(saved)!="fullblack")throw new Exception("Full Black choice does not persist");
             }
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.15"}))throw new Exception("Numeric update comparison failed");
+            foreach(string tag in new[]{"v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.16"}))throw new Exception("Numeric update comparison failed");
             var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
             var binding=BindingFlags.Instance|BindingFlags.NonPublic;
             using(var service=(IDisposable)Activator.CreateInstance(serviceType,new[]{options})){
@@ -248,6 +248,7 @@ class Checks {
                     if((string)asyncType.GetProperty("Value").GetValue(provider,null)!="initial")throw new Exception("Disposed provider publishes stale data");
                 }finally{gate.Set();provider.Dispose();}
             }
+
             Console.WriteLine("Polling deadlines and nonblocking provider lifecycle passed");
             Console.WriteLine("Settings, battery reconnect, generic devices and native connection layouts passed");
             return 0;
@@ -261,3 +262,6 @@ $source=Join-Path $output 'Checks.cs'
 if($LASTEXITCODE -ne 0){throw 'Validation compilation failed'}
 Push-Location $output
 try { & './Checks.exe'; if($LASTEXITCODE -ne 0){throw 'Native validation failed'} } finally { Pop-Location }
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'validate-feed.ps1') -Assembly $exe
+if($LASTEXITCODE -ne 0){throw 'Afterburner recovery validation failed'}
