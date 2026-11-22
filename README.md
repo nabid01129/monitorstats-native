@@ -4,7 +4,7 @@ This separate Windows edition uses Windows Forms and in-process C# collectors. T
 
 ## Install and use
 
-Run **MonitorStats-Native-Setup-1.0.21-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
+Run **MonitorStats-Native-Setup-1.0.24-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
 
 In Settings, choose the widget monitor, game monitor, placement, scaling, theme, polling interval, and OLED shifting interval. Configure your ONU address and credentials in the Network tab to enable optical power. Credentials are encrypted for your Windows account.
 
@@ -67,3 +67,5 @@ A compact notice beside the Windows version shows pending software, optional pre
 Settings > Sensors shows the sources of the latest readings, provider availability and sample time. Its Refresh status button reads existing snapshots only; it does not run another hardware or online scan. Missing readings remain omitted from the dashboard.
 
 Settings > General offers **Reduce polling while minimized or hidden (10 seconds)**. It is off by default. When enabled, the hardware poller and clock timer run every 10 seconds while the widget is minimized or hidden. Showing the widget restores the selected hardware interval immediately. This reduces background work; it is not a RAM cap. Existing slower metadata schedules remain in effect.
+
+MCHOSE G3 2.4 GHz: a dimmed percentage prefixed with ~ is the last measured battery level while the radio sleeps, is off, or has not supplied a fresh report in five minutes. The receiver reports sleep and power-off identically; the app cannot reliably distinguish them. Last readings are saved locally for up to seven days, keyed to the receiver, and removed receivers are hidden. A connected G3 over Bluetooth takes priority over its sleeping receiver cache. No battery percentage is estimated or generated.

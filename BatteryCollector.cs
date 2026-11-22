@@ -30,6 +30,7 @@ namespace MonitorStatsNative {
         List<Data> batteries=new List<Data>();
         MonitorStatsPeripheralBatteryReading[] windowsBatteries=new MonitorStatsPeripheralBatteryReading[0];
         int refresh;
+        bool bluetoothG3;
         public BatteryCollector(){MonitorStatsPeripheralBattery.RegisterForDeviceNotifications();worker=new AsyncSnapshot<Data[]>(new Data[0],Read,MonitorStatsPeripheralBattery.UnregisterDeviceNotifications);}
         public Data[] Snapshot {get{return worker.Value;}}
         public void Request(){worker.Request();}
@@ -46,8 +47,10 @@ namespace MonitorStatsNative {
             fresh=fresh.Where(DynamicBattery).Concat(windowsBatteries).GroupBy(b=>String.IsNullOrEmpty(b.ContainerId)?b.Name:b.ContainerId,StringComparer.OrdinalIgnoreCase).Select(g=>g.First()).ToArray();
             if (presence || batteryRefresh) {
                 var connected = BluetoothState.Read();
+                bluetoothG3=fresh.Any(b=>b.IsBluetoothDevice&&b.Category=="Mouse"&&Query.Match(b.Name,@"\bG3\b")&&BluetoothState.IsConnected(b,connected));
                 var updated = new List<Data>();
                 foreach (var item in fresh) {
+                    if(bluetoothG3&&item.Detail=="MCHOSE G3 2.4 GHz receiver"&&item.BatteryLevel=="Cached")continue;
                     if (!BluetoothState.IsConnected(item,connected)) continue;
                     var old = batteries.FirstOrDefault(b => b.Text("name") == item.Name);
                     updated.Add(!batteryRefresh && old != null && item.Detail != "MCHOSE G3 2.4 GHz receiver" ? old : Battery(item));
@@ -55,7 +58,7 @@ namespace MonitorStatsNative {
                 batteries = updated;
             } else {
                 batteries.RemoveAll(b => b.Text("detail") == "MCHOSE G3 2.4 GHz receiver" || b.Text("detail").StartsWith("Windows controller level"));
-                batteries.AddRange(fresh.Where(DynamicBattery).Select(Battery));
+                batteries.AddRange(fresh.Where(b=>DynamicBattery(b)&&!(bluetoothG3&&b.Detail=="MCHOSE G3 2.4 GHz receiver"&&b.BatteryLevel=="Cached")).Select(Battery));
             }
             return batteries.ToArray();
         }

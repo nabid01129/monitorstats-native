@@ -260,8 +260,8 @@ class Checks {
             Console.WriteLine("Automatic monitor consistency and offline device-name persistence passed");
             Console.WriteLine("On-demand sensor diagnostics, source labels and background option passed");
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.21","v1.0.20","v1.0.19","v1.0.18","v1.0.17","v1.0.16","v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.22"}))throw new Exception("Numeric update comparison failed");
+            foreach(string tag in new[]{"v1.0.24","v1.0.23","v1.0.22","v1.0.21","v1.0.20","v1.0.19","v1.0.18","v1.0.17","v1.0.16","v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.25"}))throw new Exception("Numeric update comparison failed");
             var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
             var networkSnapshot=assembly.GetType("MonitorStatsNative.Telemetry",true).GetMethod("NetworkSnapshot",BindingFlags.Static|BindingFlags.NonPublic);
             var networkDelegate=typeof(Func<>).MakeGenericType(dataType);
@@ -311,7 +311,32 @@ class Checks {
             if((bool?)batteryType.GetField("g3Online",batteryFlags).GetValue(null)!=true||(int?)batteryType.GetField("g3Percent",batteryFlags).GetValue(null)!=76)throw new Exception("Fresh battery cannot restore connection");
             apply.Invoke(null,new object[]{new byte[]{9,10,5,255,0,0,0,0},8,stamp});
             if((int?)batteryType.GetField("g3Percent",batteryFlags).GetValue(null)!=76)throw new Exception("Invalid battery percentage accepted");
+            apply.Invoke(null,new object[]{new byte[]{9,10,2,0,0,0,0,0},8,stamp.AddSeconds(60)});
+            if((DateTime)batteryType.GetField("g3NextQuery",batteryFlags).GetValue(null)>stamp.AddSeconds(65))throw new Exception("Sleeping mouse retains five-minute query deadline");
+            var currentG3=batteryType.GetMethod("G3Reading",batteryFlags);
+            var sleeping=currentG3.Invoke(null,new object[]{stamp.AddSeconds(61)});
+            if(sleeping==null||(int?)sleeping.GetType().GetProperty("BatteryPercent").GetValue(sleeping,null)!=76||Convert.ToString(sleeping.GetType().GetProperty("BatteryLevel").GetValue(sleeping,null))!="Cached")throw new Exception("Sleeping mouse loses its marked last-known battery");
+            apply.Invoke(null,new object[]{new byte[]{9,10,2,1,0,0,0,0},8,stamp.AddSeconds(62)});
+            var wakeReading=currentG3.Invoke(null,new object[]{stamp.AddSeconds(62)});
+            if(wakeReading==null||(int?)wakeReading.GetType().GetProperty("BatteryPercent").GetValue(wakeReading,null)!=76)throw new Exception("Wake loses recent battery before next percentage report");
+            apply.Invoke(null,new object[]{new byte[]{9,10,5,74,0,0,0,0},8,stamp.AddSeconds(66)});
+            if((bool?)batteryType.GetField("g3Online",batteryFlags).GetValue(null)!=true||(int?)batteryType.GetField("g3Percent",batteryFlags).GetValue(null)!=74)throw new Exception("Wake battery response requires reconnect packet");
+            apply.Invoke(null,new object[]{new byte[]{9,10,2,1,0,0,0,0},8,stamp.AddMinutes(13)});
+            var staleReading=currentG3.Invoke(null,new object[]{stamp.AddMinutes(13)});
+            if(staleReading==null||Convert.ToString(staleReading.GetType().GetProperty("BatteryLevel").GetValue(staleReading,null))!="Cached")throw new Exception("Long sleep deletes last-known battery or labels it live");
+            if(currentG3.Invoke(null,new object[]{stamp.AddDays(8)})!=null)throw new Exception("Expired battery cache remains visible");
             batteryType.GetMethod("CloseG3",batteryFlags).Invoke(null,null);
+            if(currentG3.Invoke(null,new object[]{DateTime.UtcNow})!=null)throw new Exception("Removed receiver retains cached battery");
+            var cacheType=assembly.GetType("G3BatteryCache",true);
+            var parseCache=cacheType.GetMethod("Parse",BindingFlags.Static|BindingFlags.NonPublic);
+            foreach(string invalidCache in new[]{"","101|"+stamp.Ticks,"-1|"+stamp.Ticks,"93|"+stamp.AddDays(1).Ticks,"93|"+stamp.AddDays(-8).Ticks,"93|9223372036854775807"}){
+                object[] cacheArgs={invalidCache,stamp,0,DateTime.MinValue};
+                if((bool)parseCache.Invoke(null,cacheArgs))throw new Exception("Invalid or expired battery cache accepted");
+            }
+            object[] goodCache={"93|"+stamp.AddHours(-12).Ticks,stamp,0,DateTime.MinValue};
+            if(!(bool)parseCache.Invoke(null,goodCache)||(int)goodCache[2]!=93)throw new Exception("Overnight battery cache cannot restore");
+            var batteryText=canvasType.GetMethod("BatteryText",BindingFlags.Static|BindingFlags.NonPublic);
+            if((string)batteryText.Invoke(null,new object[]{data(new object[]{"batteryPercent",93,"batteryLevel","Cached"})})!="~93%")throw new Exception("Cached battery is not visibly marked");
             var readingType=assembly.GetType("MonitorStatsPeripheralBatteryReading",true);
             var connectedCheck=assembly.GetType("MonitorStatsNative.BluetoothState",true).GetMethod("IsConnected",BindingFlags.Static|BindingFlags.NonPublic);
             foreach(string category in new[]{"Earbuds","Keyboard","Audio","Controller","Mouse","Wireless device"}){

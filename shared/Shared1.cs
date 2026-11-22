@@ -195,6 +195,9 @@ public static class MonitorStatsPeripheralBattery {
   private static DateTime g3RefreshAt;
   private static DateTime g3NextQuery;
   private static DateTime g3LastStatus;
+  private static DateTime g3LastBattery;
+  private static string g3ReceiverKey;
+  private static DateTime g3LastCacheWrite;
 
   private static void CloseG3() {
     if (g3Stream != null) g3Stream.Dispose();
@@ -206,8 +209,11 @@ public static class MonitorStatsPeripheralBattery {
     g3Percent = null;
     g3DisplayedPercent = null;
     g3LastStatus = DateTime.MinValue;
+    g3LastBattery = DateTime.MinValue;
     g3RefreshAt = DateTime.MinValue;
     g3NextQuery = DateTime.MinValue;
+    g3ReceiverKey = null;
+    g3LastCacheWrite = DateTime.MinValue;
   }
 
   private static bool RequestG3Status(SafeFileHandle handle) {
@@ -217,17 +223,22 @@ public static class MonitorStatsPeripheralBattery {
     byte[] prefix = { 0x09, 0x0D, 0x05, 0x01, 0x01, 0x00, 0x06 };
     prefix.CopyTo(request, 0);
     try {
-      if (!HidD_SetFeature(handle, request, request.Length)) return false;
-      Thread.Sleep(100);
       byte[] reply = new byte[G3FeatureLength];
-      reply[0] = 0x09;
-      if (!HidD_GetFeature(handle, reply, reply.Length)) return false;
-      for (int i = 0; i < prefix.Length; i++) {
-        if (reply[i] != prefix[i]) return false;
-      }
-      byte[] productCode = { 0, 4, 0, 0, 0, 0, 0x19 };
-      for (int i = 0; i < productCode.Length; i++) {
-        if (reply[prefix.Length + i] != productCode[i]) return false;
+      if (!g3Identified) {
+        if (!HidD_SetFeature(handle, request, request.Length)) return false;
+        Thread.Sleep(100);
+        reply[0] = 0x09;
+        if (!HidD_GetFeature(handle, reply, reply.Length)) return false;
+        for (int i = 0; i < prefix.Length; i++) {
+          if (reply[i] != prefix[i]) return false;
+        }
+        byte[] productCode = { 0, 4, 0, 0, 0, 0, 0x19 };
+        for (int i = 0; i < productCode.Length; i++) {
+          if (reply[prefix.Length + i] != productCode[i]) return false;
+        }
+        // Identity belongs to this open receiver handle, not to each battery poll.
+        // A sleeping radio may stop answering the model query after initial setup.
+        g3Identified = true;
       }
 
       // Read configuration without changing it. Only the separate input
@@ -277,6 +288,17 @@ public static class MonitorStatsPeripheralBattery {
                   caps.FeatureReportByteLength != G3FeatureLength) continue;
               FileStream stream = new FileStream(handle, FileAccess.Read, 1, true);
               handle = null; // FileStream now owns the handle.
+              g3ReceiverKey = G3BatteryCache.ReceiverKey(path);
+              int saved; DateTime measured;
+              if (G3BatteryCache.Load(g3ReceiverKey, DateTime.UtcNow, out saved, out measured)) {
+                g3Percent = saved; g3DisplayedPercent = saved;
+                g3LastBattery = measured; g3LastCacheWrite = measured;
+                // This cache was saved only after model validation on this
+                // exact Windows receiver path. Restore identity, not liveness:
+                // wake/battery packets must be accepted even when the sleeping
+                // mouse cannot answer another model-identification exchange.
+                g3Identified = true;
+              }
               return stream;
             } finally { HidD_FreePreparsedData(preparsedData); }
           } finally { if (handle != null) handle.Dispose(); }
@@ -294,51 +316,76 @@ public static class MonitorStatsPeripheralBattery {
       if (g3Packet == null) g3Packet = new byte[G3InputLength];
       if (g3Read == null) g3Read = g3Stream.ReadAsync(g3Packet, 0, g3Packet.Length);
       var now = DateTime.UtcNow;
-      if (now >= g3NextQuery) {
+      DrainG3Reports(now);
+      if (g3Stream == null) return null;
+      // The pending input read receives the wake notification. Do not keep
+      // sending configuration requests to a radio that explicitly went asleep.
+      if (now >= g3NextQuery && g3Online != false) {
         // Keep the feature exchange in order on the collector thread. The
         // pending input read captures the response while the request completes.
         bool confirmed = RequestG3Status(g3Stream.SafeFileHandle);
         if (confirmed) g3Identified = true;
-        g3NextQuery = now.AddSeconds(confirmed && g3Percent.HasValue ? 300 : 5);
+        now = DateTime.UtcNow;
+        // Model/configuration acknowledgement is not a fresh battery response.
+        // Retry missing responses; only ApplyG3Report schedules the five-minute refresh.
+        g3NextQuery = now.AddSeconds(5);
       }
-      for (int i = 0; i < 32 && g3Read.IsCompleted; i++) {
-        int count = g3Read.GetAwaiter().GetResult();
-        if (count == 0) { CloseG3(); return null; }
-        ApplyG3Report(g3Packet, count, now);
-        g3Read = g3Stream.ReadAsync(g3Packet, 0, g3Packet.Length);
-      }
-      if (g3Online != true) return null;
-      if (now - g3LastStatus > TimeSpan.FromMinutes(11)) {
-        g3Online = null;
-        g3Percent = null;
-        g3DisplayedPercent = null;
-        return null;
-      }
-      if (g3Percent.HasValue && (!g3DisplayedPercent.HasValue || now >= g3RefreshAt)) {
-        g3DisplayedPercent = g3Percent;
-        g3RefreshAt = now.AddMinutes(5);
-      }
-      return new MonitorStatsPeripheralBatteryReading { Name = "MCHOSE G3", Category = "Mouse",
-        BatteryPercent = g3DisplayedPercent, BatteryLevel = g3DisplayedPercent.HasValue ? null : "Connected",
-        Detail = "MCHOSE G3 2.4 GHz receiver" };
+      DrainG3Reports(now);
+      return G3Reading(now);
     } catch (IOException) { CloseG3(); }
       catch (UnauthorizedAccessException) { CloseG3(); }
     return null;
   }
 
+  private static MonitorStatsPeripheralBatteryReading G3Reading(DateTime now) {
+      // Radio-off means either sleep or power-off on this firmware. Do not
+      // erase a measured percentage merely because the one-minute sleep fired.
+      // A removed receiver is still hidden by CloseG3, which clears this state.
+      if (now < g3LastBattery || now - g3LastBattery > TimeSpan.FromDays(7)) {
+        g3Percent = null;
+        g3DisplayedPercent = null;
+      }
+      if (g3Percent.HasValue && (!g3DisplayedPercent.HasValue || now >= g3RefreshAt)) {
+        g3DisplayedPercent = g3Percent;
+        g3RefreshAt = now.AddMinutes(5);
+      }
+      if (!g3DisplayedPercent.HasValue) return null;
+      return new MonitorStatsPeripheralBatteryReading { Name = "MCHOSE G3", Category = "Mouse",
+        BatteryPercent = g3DisplayedPercent,
+        BatteryLevel = !g3Identified || g3Online != true || now - g3LastBattery > TimeSpan.FromMinutes(5) ? "Cached" : null,
+        Detail = "MCHOSE G3 2.4 GHz receiver" };
+  }
+
+  private static void DrainG3Reports(DateTime now) {
+    for (int i = 0; i < 32 && g3Read != null && g3Read.IsCompleted; i++) {
+      int count = g3Read.GetAwaiter().GetResult();
+      if (count == 0) { CloseG3(); return; }
+      ApplyG3Report(g3Packet, count, now);
+      g3Read = g3Stream.ReadAsync(g3Packet, 0, g3Packet.Length);
+    }
+  }
   private static void ApplyG3Report(byte[] report, int count, DateTime now) {
         if (g3Identified && count == G3InputLength && report != null && report.Length >= count && report[0] == 9 && report[1] == 0x0A) {
           int value = report[3];
           if (report[2] == 2 && value <= 1) {
             g3LastStatus = now;
             g3Online = value == 1;
-            if (value == 0) { g3Percent = null; g3DisplayedPercent = null; }
-            else if (!g3Percent.HasValue) g3NextQuery = now;
+            if (value == 0) {
+              // Sleep can use the same radio-off packet as a power-off.
+              // Hide offline, but retain the bounded last measurement for wake.
+              g3NextQuery = now.AddSeconds(5);
+            }
+            else g3NextQuery = now;
           } else if (report[2] == 5 && value <= 100) {
             // A fresh battery response proves the radio is online even if
             // the separate reconnect notification was missed.
             g3LastStatus = now;
+            g3LastBattery = now;
             g3Online = true;
+            if (g3Percent != value || now - g3LastCacheWrite >= TimeSpan.FromMinutes(5)) {
+              G3BatteryCache.Save(g3ReceiverKey, value, now);
+              g3LastCacheWrite = now;
+            }
             g3Percent = value;
             g3NextQuery = now.AddMinutes(5);
           }

@@ -1,5 +1,25 @@
 # Native edition changes
 
+## 1.0.24 (2026-11-22)
+
+- Treat the G3 radio-off notification as sleep/power-off ambiguity rather than deleting the measured battery entry. Show a dimmed ~ percentage for last-known readings; fresh reports restore the normal display.
+- Retain actual receiver readings across app/PC restarts in a local per-receiver cache. Expire cached measurements after seven days, reject malformed/future values, and clear the visible entry when the receiver is removed.
+- Stop repeated configuration requests while the radio explicitly reports offline; the existing asynchronous input read listens for wake notifications.
+- Prefer a connected G3 Bluetooth battery over the sleeping 2.4 GHz cache, avoiding duplicate entries.
+- Add regression checks for sleep, long idle periods, cached/live display distinction, cache expiry, invalid data, and receiver removal.
+
+## 1.0.23 (local build)
+
+- Verify G3 identity once for each open receiver connection; subsequent status requests no longer depend on repeating the model exchange.
+- Preserve the last real battery measurement across radio-off/sleep notifications, while continuing to hide offline devices. Restore a recent percentage on a wake notification without waiting for another percentage packet.
+- Expire reused percentages by the battery measurement timestamp; connection notifications cannot keep old battery data alive indefinitely.
+- Add regression checks for hidden offline readings, wake before a fresh battery packet, and stale battery expiration.
+## 1.0.22 (local build)
+
+- Clear the old five-minute request deadline when the G3 receiver reports radio offline, including sleep transitions.
+- Retry missing battery responses after five seconds instead of treating a receiver acknowledgement as a fresh reading.
+- Drain pending receiver messages before scheduling requests and accept fresh battery reports as wake evidence without requiring a separate reconnect event.
+- Keep normal battery refresh at five minutes and hide offline readings. Add sleep/wake regression coverage.
 ## 1.0.21 (2026-11-21)
 
 - Read primitive numeric telemetry directly instead of formatting and parsing it on every access, preserving native numeric precision and invariant parsing for text-based values.

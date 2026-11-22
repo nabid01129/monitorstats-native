@@ -90,6 +90,11 @@ namespace MonitorStatsNative {
         new static Line Text(string text,bool bold=false){return new Line("",text,bold);}
         static Line Metric(string caption,Data data,string field,string unit="",int digits=1){return new Line(caption,Query.Format(data.Number(field),unit,digits),true);}
         string IP(string value){return value.Length==0?"":showIps?value:"Hidden";}
+        internal static string BatteryText(Data battery) {
+            var percent=battery.Number("batteryPercent");
+            if(percent.HasValue)return (battery.Text("batteryLevel")=="Cached"?"~":"")+Query.Format(percent,"%",0);
+            return battery.Text("batteryLevel")=="Connected"?"—":battery.Text("batteryLevel");
+        }
         List<Card>[] Build() {
             var left=new List<Card>();var right=new List<Card>();var cpu=Stats.Section("cpu");var gpu=Stats.Section("gpu");var ram=Stats.Section("ram");var net=Stats.Section("network").Copy();
             foreach(var pair in Extras)net[pair.Key]=pair.Value;
@@ -99,7 +104,7 @@ namespace MonitorStatsNative {
             system.Add(system.ClockText,Text(windowsVersion));
             system.Add(system.DateText,Text(WindowsUpdate.Text("heading"),true));
             if(WindowsUpdate.Text("heading").Length>0)system.Add(Text(WindowsUpdate.Text("summary")));
-            var batteries=Stats.Rows("batteries").OrderBy(b=>b.Text("category"),StringComparer.OrdinalIgnoreCase).ThenBy(b=>b.Text("name"),StringComparer.OrdinalIgnoreCase).Select(b=>new Line("",b.Number("batteryPercent").HasValue?Query.Format(b.Number("batteryPercent"),"%",0):b.Text("batteryLevel")=="Connected"?"—":b.Text("batteryLevel"),true){Icon=b.Text("category")}).ToArray();
+            var batteries=Stats.Rows("batteries").OrderBy(b=>b.Text("category"),StringComparer.OrdinalIgnoreCase).ThenBy(b=>b.Text("name"),StringComparer.OrdinalIgnoreCase).Select(b=>new Line("",BatteryText(b),true){Icon=b.Text("category"),Color=b.Text("batteryLevel")=="Cached"?(Color?)CurrentTheme().Muted:null}).ToArray();
             for(int i=0;i<batteries.Length;i+=4)system.Add(batteries.Skip(i).Take(4).ToArray());
             left.Add(system);
             if(Options.Fps){
