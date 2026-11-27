@@ -14,7 +14,7 @@ namespace MonitorStatsNative {
         [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr FindWindow(string className,string title);
         [DllImport("user32.dll")]static extern bool ShowWindow(IntPtr window,int command);
         [DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
-        public const string Version = "1.0.24";
+        public const string Version = "1.0.27";
         [STAThread] static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;
             SetProcessDPIAware();
@@ -25,7 +25,7 @@ namespace MonitorStatsNative {
             bool measuring=args.Length>=3&&args[0]=="--measure";
             using(var instance=new Mutex(true,measuring?@"Local\MonitorStatsNative.Measure":@"Local\MonitorStatsNative",out first)) {
                 if(!first){if(!measuring){IntPtr window=FindWindow(null,"MonitorStats Native");if(window!=IntPtr.Zero){ShowWindow(window,9);SetForegroundWindow(window);}}return;}
-                try { Application.Run(new Dashboard(args)); } catch(Exception error) { Log(error.ToString()); }
+                try { using(var dashboard=new Dashboard(args)){try{Application.Run(dashboard);}finally{dashboard.WaitForCollector();}} } catch(Exception error) { Log(error.ToString()); }
             }
         }
         internal static void Log(string message) {
@@ -96,6 +96,9 @@ namespace MonitorStatsNative {
         bool measuredSettings;
         readonly bool reviewMode;
         bool settingsOpen;
+        readonly object collectorLifetime=new object();
+        readonly ManualResetEventSlim collectorFinished=new ManualResetEventSlim(true);
+        internal void WaitForCollector(){if(!collectorFinished.Wait(10000))Program.Log("Timed out waiting for telemetry shutdown; latest history checkpoint remains available.");}
         public Dashboard(string[] args) {
             options=Options.Load();reviewMode=args.Contains("--review");
             if(args.Length>=3&&args[0]=="--measure") { measurePath=Path.GetFullPath(args[1]);Int32.TryParse(args[2],out measureSeconds); options.Startup=false;if(args.Length>3&&Theme.All.Any(t=>t.Id==args[3]))options.Theme=args[3]; }
@@ -192,7 +195,7 @@ namespace MonitorStatsNative {
         internal static long NextDeadline(long deadline,long now,int interval){if(interval<=0)throw new ArgumentOutOfRangeException("interval");return deadline>now?deadline:deadline+((now-deadline)/interval+1)*interval;}
         void ReleaseTelemetry(){if(Interlocked.Exchange(ref telemetryReleased,1)==0)telemetry.Dispose();}
         void Collect(object state) {
-            if(closing||Interlocked.Exchange(ref collecting,1)!=0)return;
+            lock(collectorLifetime){if(closing||collecting!=0)return;collecting=1;collectorFinished.Reset();}
             try {
                 bool refresh=Interlocked.Exchange(ref refreshRequested,0)!=0;
                 if(refresh) {telemetry.Refresh();services.Refresh();nextSample=0;}
@@ -210,9 +213,12 @@ namespace MonitorStatsNative {
                 }
             } catch(Exception error) { Program.Log(error.ToString()); }
             finally {
-                Interlocked.Exchange(ref collecting,0);
-                if(closing)ReleaseTelemetry();
-                if(!closing)try{int delay=Volatile.Read(ref refreshRequested)!=0||Volatile.Read(ref pollingChanged)!=0?1:(int)Math.Max(1,Math.Min(Int32.MaxValue,nextSample-uptime.ElapsedMilliseconds));collector.Change(delay,Timeout.Infinite);}catch(ObjectDisposedException){}
+                lock(collectorLifetime){
+                    collecting=0;
+                    try{if(closing)ReleaseTelemetry();}
+                    finally{collectorFinished.Set();}
+                    if(!closing)try{int delay=Volatile.Read(ref refreshRequested)!=0||Volatile.Read(ref pollingChanged)!=0?1:(int)Math.Max(1,Math.Min(Int32.MaxValue,nextSample-uptime.ElapsedMilliseconds));collector.Change(delay,Timeout.Infinite);}catch(ObjectDisposedException){}
+                }
             }
         }
         void Clock(object sender,EventArgs args) {
@@ -252,10 +258,11 @@ namespace MonitorStatsNative {
             }
         }
         protected override void OnFormClosing(FormClosingEventArgs e) {
-            closing=true;clock.Stop();collector.Dispose();services.Dispose();windowsUpdates.Dispose();
+            lock(collectorLifetime){closing=true;collector.Dispose();if(collecting==0)ReleaseTelemetry();}
+            clock.Stop();services.Dispose();windowsUpdates.Dispose();
             SystemEvents.DisplaySettingsChanged-=DisplaysChanged;tray.Visible=false;tray.Dispose();clock.Dispose();
-            // The in-flight collector owns its native handles until it exits.
-            if(Volatile.Read(ref collecting)==0)ReleaseTelemetry();
+            // Program waits after the message loop ends, without blocking an
+            // active collector's UI callbacks, so history is saved on normal exit.
             base.OnFormClosing(e);
         }
     }

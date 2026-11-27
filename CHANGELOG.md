@@ -1,5 +1,29 @@
 # Native edition changes
 
+## 1.0.27 (2026-11-27)
+
+- Review and fix the 1.0.26 implementation; keep its lightweight, system-wide write-I/O feature and existing sensor integrations.
+- Stop assigning deltas after long collection pauses to the newest history bucket, where their timing cannot be known reliably.
+- Keep known drive write totals visible through malformed counter samples, and handle read/write counter resets independently.
+- Coordinate collector start/exit and wait for active collection after the window message loop ends, allowing normal shutdown to save history before the process exits.
+- Avoid allocating a second set of drive-history arrays when loading valid saved files; release unused app-name metadata after all its records expire.
+- Show write-history tracking dates and data-source limitations in Settings > Sensors without adding data collection.
+- Deduplicate USB power estimates by physical USB ancestry instead of counting every HID interface as another powered device.
+- Add regression coverage for long sampling gaps, independent counter resets and composite USB device grouping.
+## 1.0.26 (local build)
+
+- Add a compact small-font App write I/O card below Processes, showing the top three observed apps and amounts for the rolling last 24 hours and 30 days.
+- Use system-wide process write-I/O counters during the existing process scan every 30 seconds. This lightweight option does not start continuous tracing or another background process and does not require administrator access.
+- Explicitly label these values as file/network/device I/O, not per-drive disk writes. Protected or short-lived processes may not be represented.
+- Group app instances by executable name, prevent PID-reuse/reset spikes, and retain bounded 15-minute history locally across restarts.
+- Validate ranking, grouping, process identity reuse, rolling expiry, persistence, corrupt-file recovery and the compact layout across display sizes.
+## 1.0.25 (local build)
+
+- Add per-volume write totals for the rolling last 24 hours and last 30 days to each storage card.
+- Use raw cumulative Windows byte counters for both transfer rates and write history, replacing the formatted-counter query without adding another recurring WMI query.
+- Keep bounded five-minute history buckets in memory and checkpoint local history every five minutes and on normal exit. Tracking starts with this version and does not invent writes from before monitoring or while the app is closed.
+- Key history to volume GUIDs so drive-letter changes and replacement drives do not mix data. Handle counter resets, clock rollback, corrupt history files and unavailable storage without interrupting telemetry.
+- Validate burst accounting, rolling expiry, restart persistence, independent/replaced volumes, failure cases, and scaling with the new storage rows.
 ## 1.0.24 (2026-11-22)
 
 - Treat the G3 radio-off notification as sleep/power-off ambiguity rather than deleting the measured battery entry. Show a dimmed ~ percentage for last-known readings; fresh reports restore the normal display.

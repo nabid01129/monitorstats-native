@@ -2,7 +2,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
 Name "MonitorStats Native"
-OutFile "${BUILD}\MonitorStats-Native-Setup-1.0.24-${ARCH}.exe"
+OutFile "${BUILD}\MonitorStats-Native-Setup-1.0.27-${ARCH}.exe"
 InstallDir "$LOCALAPPDATA\Programs\MonitorStats Native"
 RequestExecutionLevel user
 !insertmacro MUI_PAGE_WELCOME
@@ -27,7 +27,7 @@ Section
   CreateShortcut "$SMPROGRAMS\MonitorStats Native.lnk" "$INSTDIR\MonitorStats Native.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MonitorStatsNative" "DisplayName" "MonitorStats Native"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MonitorStatsNative" "DisplayVersion" "1.0.24"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MonitorStatsNative" "DisplayVersion" "1.0.27"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MonitorStatsNative" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "MonitorStatsNative"
   StrCmp $0 "" +2

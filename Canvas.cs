@@ -15,7 +15,7 @@ namespace MonitorStatsNative {
         public static Theme Find(string id) {return All.FirstOrDefault(t=>t.Id==id)??All[0];}
     }
     internal sealed class Line {
-        public string Caption,Text,Icon,Badge;public bool Strong;public Color? Color;
+        public string Caption,Text,Icon,Badge;public bool Strong,Small;public Color? Color;
         public Line(string caption,string text,bool strong=false,Color? color=null){Caption=caption;Text=text;Strong=strong;Color=color;}
     }
     internal sealed class Card {
@@ -23,7 +23,8 @@ namespace MonitorStatsNative {
         public string Title;public List<Line[]> Rows=new List<Line[]>();public double? Bar;public double[] Cores;public double[] CoreTemps;public bool Graph,Clock;
         public Card(string title){Title=title;}
         public Card Add(params Line[] lines){var present=lines.Where(l=>!String.IsNullOrEmpty(l.Text)).ToArray();if(present.Length>0)Rows.Add(present);return this;}
-        public int Height {get{return 42+Rows.Sum(r=>r.Any(l=>l.Caption.Length>0)?44:25)+(Bar.HasValue?16:0)+(Cores!=null?(int)Math.Ceiling(Cores.Length/6.0)*28:0)+(Graph?64:0);}}
+        public static int RowHeight(Line[] row){return row.Any(l=>l.Caption.Length>0)?44:row.All(l=>l.Small)?18:25;}
+        public int Height {get{return 42+Rows.Sum(r=>RowHeight(r))+(Bar.HasValue?16:0)+(Cores!=null?(int)Math.Ceiling(Cores.Length/6.0)*28:0)+(Graph?64:0);}}
     }
     internal sealed class Canvas : Control {
         public Options Options;
@@ -95,6 +96,12 @@ namespace MonitorStatsNative {
             if(percent.HasValue)return (battery.Text("batteryLevel")=="Cached"?"~":"")+Query.Format(percent,"%",0);
             return battery.Text("batteryLevel")=="Connected"?"—":battery.Text("batteryLevel");
         }
+        internal static string WriteBytes(double? bytes) {
+            if(!bytes.HasValue||bytes.Value<0||Double.IsNaN(bytes.Value)||Double.IsInfinity(bytes.Value))return "";
+            double value=bytes.Value;string[] units={" B"," KB"," MB"," GB"," TB"," PB"};int unit=0;
+            while(value>=1000&&unit<units.Length-1){value/=1000;unit++;}
+            return Query.Format(value,units[unit],unit==0?0:2);
+        }
         List<Card>[] Build() {
             var left=new List<Card>();var right=new List<Card>();var cpu=Stats.Section("cpu");var gpu=Stats.Section("gpu");var ram=Stats.Section("ram");var net=Stats.Section("network").Copy();
             foreach(var pair in Extras)net[pair.Key]=pair.Value;
@@ -133,6 +140,20 @@ namespace MonitorStatsNative {
             var process=new Card("Processes");process.Add(Metric("Running processes",ram,"processCount","",0));
             int rank=0;foreach(var p in ram.Rows("topProcesses"))process.Add(Text((++rank)+". "+p.Text("name")),Text(p.Number("workingSetMB")>=1024?Query.Format(p.Number("workingSetMB")/1024," GB",2):Query.Format(p.Number("workingSetMB")," MB",0)));
             left.Add(process);
+            var appIo=Stats.Section("appWriteIo");
+            var dayApps=appIo.Rows("last24h").Take(3).ToArray();var monthApps=appIo.Rows("last30d").Take(3).ToArray();
+            if(dayApps.Length>0||monthApps.Length>0){
+                var leaders=new Card("App write I/O");
+                leaders.Add(new Line("","File, network and device writes"){Small=true});
+                leaders.Add(new Line("","24 hours",true){Small=true},new Line("","30 days",true){Small=true});
+                for(int i=0;i<Math.Max(dayApps.Length,monthApps.Length);i++){
+                    var a=i<dayApps.Length?dayApps[i]:new Data();var b=i<monthApps.Length?monthApps[i]:new Data();
+                    // Keep four columns even when one window has fewer entries.
+                    leaders.Rows.Add(new[]{new Line("",a.Count>0?(i+1)+". "+a.Text("name"):""){Small=true},new Line("",WriteBytes(a.Number("bytes"))){Small=true},
+                        new Line("",b.Count>0?(i+1)+". "+b.Text("name"):""){Small=true},new Line("",WriteBytes(b.Number("bytes"))){Small=true}});
+                }
+                left.Add(leaders);
+            }
             if(Power.Count>0){var p=new Card("Total system power");p.Add(Text((Power.Text("mode")=="Measured"?"":"≈ ")+Query.Format(Power.Number("watts")," W",0),true));p.Add(Text("Range "+Query.Format(Power.Number("low"),"",0)+"–"+Query.Format(Power.Number("high")," W",0)),Text(Power.Text("mode")));left.Add(p);}
             var memory=new Card("Memory"){Bar=ram.Number("loadPercent")};memory.Add(Text(Options.Name("ram",ram.Text("spec")),true));
             var sizes=ram.Get("stickCapacitiesGB") as double[];
@@ -144,7 +165,8 @@ namespace MonitorStatsNative {
                 d.Add(Metric("Used",drive,"usedGB"," GB",0),Metric("Free",drive,"freeGB"," GB",0),Metric("Total",drive,"totalGB"," GB",0));
                 d.Add(Metric("Read",drive,"readKBps"," KB/s"),Metric("Write",drive,"writeKBps"," KB/s"));
                 d.Add(Text(drive.Text("health")),Metric("Temp",drive,"tempC","°C"));
-                d.Add(Metric("Wear used",drive,"wearPercent","%"),Metric("Power-on",drive,"powerOnHours"," h",0),Metric("Host writes",drive,"hostWritesTB"," TB",2));right.Add(d);
+                d.Add(Metric("Wear used",drive,"wearPercent","%"),Metric("Power-on",drive,"powerOnHours"," h",0),Metric("Host writes",drive,"hostWritesTB"," TB",2));
+                d.Add(new Line("Writes · 24h",WriteBytes(drive.Number("writes24hBytes")),true),new Line("Writes · 30d",WriteBytes(drive.Number("writes30dBytes")),true));right.Add(d);
             }
             var network=new Card("Network");
             network.Add(Text(net.Text("name"),true));network.Add(Text(String.Join(" · ",new[]{net.Text("adapter"),net.Text("profile"),net.Text("linkSpeed")}.Where(s=>s.Length>0))));
@@ -241,13 +263,13 @@ namespace MonitorStatsNative {
                         }
                         DrawText(g,line.Text,FontFor(14*fit,line.Strong),line.Color??theme.Text,new RectangleF(x,y+15*fit,w-4,24*fit));
                     }else{
-                        float size=card.Clock&&card.Rows.IndexOf(row)==0&&i==0?24*fit:line.Strong?14*fit:12*fit;
+                        float size=line.Small?10*fit:card.Clock&&card.Rows.IndexOf(row)==0&&i==0?24*fit:line.Strong?14*fit:12*fit;
                         if(line.Icon!=null){DrawIcon(g,line.Icon,x,y,13*fit,theme);x+=19*fit;}
                         float iconOffset=line.Icon!=null?19*fit:0;
                         DrawText(g,line.Text,FontFor(size,line.Strong),line.Color??(line.Strong?theme.Text:theme.Muted),new RectangleF(x,y,w-4-iconOffset,25*fit));
                     }
                 }
-                y+=(row.Any(l=>l.Caption.Length>0)?44:25)*fit;
+                y+=Card.RowHeight(row)*fit;
             }
             if(card.Bar.HasValue){DrawBar(g,new RectangleF(box.X+12,y,box.Width-24,5*fit),card.Bar.Value,theme);y+=16*fit;}
             if(card.Cores!=null)for(int i=0;i<card.Cores.Length;i++){

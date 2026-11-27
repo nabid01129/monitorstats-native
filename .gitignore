@@ -2,3 +2,10 @@ build/
 *.log
 settings.json
 .vs/
+
+# Local activity history and diagnostic data
+app-write-io.bin
+drive-write-history/
+*.tmp
+*.etl
+*.dmp

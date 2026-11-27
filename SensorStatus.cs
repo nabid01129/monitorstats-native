@@ -29,7 +29,16 @@ namespace MonitorStatsNative {
             Metric(lines,"GPU usage",gpu,"coreLoadPercent");Metric(lines,"GPU temperature",gpu,"tempC");Metric(lines,"GPU core clock",gpu,"coreMHz");Metric(lines,"GPU memory clock",gpu,"vramMHz");Metric(lines,"GPU power",gpu,"watt");Metric(lines,"GPU fan speed",gpu,"fanRPM");Metric(lines,"GPU fan percentage",gpu,"fanPercent");Metric(lines,"VRAM usage",gpu,"vramUsedGB");Metric(lines,"VRAM capacity",gpu,"vramTotalGB","Windows / graphics driver");
             lines.Add("");Metric(lines,"RAM usage",ram,"usedGB","Windows");Metric(lines,"Running processes",ram,"processCount","Windows");
             lines.Add("Motherboard: "+(stats.Section("motherboard").Text("product").Length>0?"Detected — Windows BIOS information":"Not reported by Windows BIOS information"));
-            foreach(var drive in stats.Rows("drives"))lines.Add("Drive "+drive.Text("letter").TrimEnd(':')+": Windows volume information"+(drive.Number("wearPercent").HasValue?"; NVMe SMART health available":"; extended SMART health unavailable"));
+            foreach(var drive in stats.Rows("drives")){
+                string label="Drive "+drive.Text("letter").TrimEnd(':');
+                lines.Add(label+": Windows volume information"+(drive.Number("wearPercent").HasValue?"; NVMe SMART health available":"; extended SMART health unavailable"));
+                if(drive.Number("writes24hBytes").HasValue){
+                    lines.Add(label+" write history: "+drive.Text("writeHistorySource"));
+                    if(drive.Get("writeHistoryStartedUtc") is DateTime)lines.Add("Tracking since "+((DateTime)drive.Get("writeHistoryStartedUtc")).ToLocalTime().ToString("g"));
+                }
+            }
+            string appSource=stats.Section("appWriteIo").Text("source");
+            if(appSource.Length>0)lines.Add("App write I/O: "+appSource+"; excludes inaccessible and missed short-lived processes");
             foreach(var fan in stats.Rows("fans"))lines.Add("Fan "+fan.Text("name")+": "+(fan.Text("source").Length>0?fan.Text("source"):"Source not recorded"));
             lines.Add("");
             lines.Add("Network traffic: "+(stats.Section("network").Number("inKBps").HasValue?"Available — Windows adapter counters":"Waiting for adapter counters"));

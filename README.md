@@ -4,7 +4,7 @@ This separate Windows edition uses Windows Forms and in-process C# collectors. T
 
 ## Install and use
 
-Run **MonitorStats-Native-Setup-1.0.24-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
+Run **MonitorStats-Native-Setup-1.0.27-x64.exe** on 64-bit Windows. Start the dashboard from its Start menu or desktop shortcut. Its tray menu provides Show, Hide, Refresh, Settings, and Exit. Exit a running native edition from its tray menu before upgrading.
 
 In Settings, choose the widget monitor, game monitor, placement, scaling, theme, polling interval, and OLED shifting interval. Configure your ONU address and credentials in the Network tab to enable optical power. Credentials are encrypted for your Windows account.
 
@@ -69,3 +69,13 @@ Settings > Sensors shows the sources of the latest readings, provider availabili
 Settings > General offers **Reduce polling while minimized or hidden (10 seconds)**. It is off by default. When enabled, the hardware poller and clock timer run every 10 seconds while the widget is minimized or hidden. Showing the widget restores the selected hardware interval immediately. This reduces background work; it is not a RAM cap. Existing slower metadata schedules remain in effect.
 
 MCHOSE G3 2.4 GHz: a dimmed percentage prefixed with ~ is the last measured battery level while the radio sleeps, is off, or has not supplied a fresh report in five minutes. The receiver reports sleep and power-off identically; the app cannot reliably distinguish them. Last readings are saved locally for up to seven days, keyed to the receiver, and removed receivers are hidden. A connected G3 over Bluetooth takes priority over its sleeping receiver cache. No battery percentage is estimated or generated.
+
+## Drive write history
+
+Each drive card shows writes during the rolling last 24 hours and last 30 days (not the previous calendar month). These totals use raw Windows logical-volume byte counters, not estimates from instantaneous speeds or the drive's lifetime SMART writes. History starts with the first sample in this version. It records while MonitorStats is running; writes while the app is closed cannot be reconstructed. Data is grouped into five-minute buckets, so rolling-window boundaries have up to five-minute resolution. History is stored locally under the app's data folder, checkpointed every five minutes and saved on normal exit. A crash can lose the uncheckpointed interval. Volume GUIDs keep histories separate when drive letters change or a drive is replaced. Missing volume identities or counters are omitted rather than guessed.
+
+## Lightweight app write-I/O leaders
+
+The App write I/O card below Processes shows three observed writers over the rolling last 24 hours and 30 days. Names group instances of the same executable name. This is system-wide write I/O, including file, network and other device writes; it is deliberately separate from per-volume disk-write totals. Windows' lightweight process counters cannot provide reliable per-drive attribution. They are sampled every 30 seconds during the existing process scan, with no continuous tracing, extra background process or administrator requirement. Short-lived or inaccessible processes can be missed. Tracking starts with this version; initial process-lifetime counters and time while the app is closed are not backfilled. History uses bounded 15-minute buckets, is saved locally every five minutes and on normal exit, and has up to 15-minute rolling-boundary resolution. Process names and activity history stay in the local app-data folder. [Windows process I/O counters](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getprocessiocounters).
+
+Long collection pauses are not backfilled into the latest time bucket: drive gaps over five minutes and app-I/O gaps over fifteen minutes establish a new baseline. Settings > Sensors shows history sources and drive tracking start dates. Normal shutdown waits briefly for any active telemetry collection so histories can be saved before exit.

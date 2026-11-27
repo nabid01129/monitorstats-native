@@ -18,18 +18,27 @@ namespace MonitorStatsNative {
         Data memory = new Data(), cpu = new Data(), gpu = new Data(), board = new Data();
         List<Data> volumes = new List<Data>(), peripherals = new List<Data>();
         readonly BatteryCollector battery = new BatteryCollector();
+        readonly DriveWriteHistory writeHistory = new DriveWriteHistory();
+        readonly AppWriteHistory appWrites = new AppWriteHistory();
         ProcessSnapshot processes = new ProcessSnapshot();
         NetworkInterface adapter;
         long received, sent, sampled;
         MemoryMappedFile mahMap;
         MemoryMappedViewAccessor mah;
         readonly byte[] text = new byte[260];
+        readonly StringBuilder volumeIdentityBuffer = new StringBuilder(128);
         CpuTime[] previous;
         bool closed;
         readonly Func<Data> readNetwork;
         [StructLayout(LayoutKind.Sequential)] struct CpuTime { public long Idle, Kernel, User, Dpc, Interrupt; public uint Count; }
         [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int info, [Out] CpuTime[] data, int size, out int length);
         [DllImport("iphlpapi.dll")] static extern int GetBestInterface(uint destination, out uint index);
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        static extern bool GetVolumeNameForVolumeMountPoint(string root, StringBuilder name, int length);
+        string VolumeIdentity(string letter) {
+            volumeIdentityBuffer.Clear();
+            return GetVolumeNameForVolumeMountPoint(letter+"\\",volumeIdentityBuffer,volumeIdentityBuffer.Capacity)?volumeIdentityBuffer.ToString():"";
+        }
 
         bool Due(string key, int seconds) {
             DateTime value;
@@ -42,7 +51,11 @@ namespace MonitorStatsNative {
             if (closed) return new Data();
             if (Due("identity", 120)) Inventory();
             if (Due("storage", 30)) Storage();
-            if (Due("process", 5)) processes = MonitorStatsMemory.ReadProcesses();
+            if (Due("process", 5)) {
+                bool observe=Due("appWrites",30);
+                processes = MonitorStatsMemory.ReadProcesses(observe);
+                if(observe)appWrites.Observe(processes.Writes,DateTime.UtcNow);
+            }
             battery.Request();
             var sensors = Sensors();
             var cpuNow = cpu.Copy(); var gpuNow = gpu.Copy();
@@ -96,16 +109,31 @@ namespace MonitorStatsNative {
             ram["loadPercent"] = status.Load;
             ram["processCount"] = processes.Count;
             ram["topProcesses"] = processes.Top.Select(p => Data.Of("name", p.Name, "workingSetMB", p.WorkingSetBytes / 1048576.0)).ToArray();
-            var counters = Query.Wmi("SELECT Name,DiskReadBytesPersec,DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_LogicalDisk");
+            // One raw query supplies both rates and exact byte deltas for history.
+            var counters = Query.Wmi("SELECT Name,DiskReadBytesPersec,DiskWriteBytesPersec,Timestamp_PerfTime,Frequency_PerfTime FROM Win32_PerfRawData_PerfDisk_LogicalDisk");
+            var driveSampleTime = DateTime.UtcNow;
             var drives = volumes.Select(v => {
                 var copy = v.Copy();
                 var counter = counters.FirstOrDefault(c => c.Text("Name") == v.Text("letter"));
-                if (counter != null) { copy["readKBps"] = counter.Number("DiskReadBytesPersec") / 1024; copy["writeKBps"] = counter.Number("DiskWriteBytesPersec") / 1024; }
+                // Validate the mount identity at sampling time as letters can be
+                // reassigned between the slower storage inventory refreshes.
+                string historyId=VolumeIdentity(v.Text("letter"));
+                copy["writeHistoryId"]=historyId;
+                Data transfer=writeHistory.Snapshot(historyId,driveSampleTime);
+                if (counter != null) {
+                    ulong read,write,clock,frequency;
+                    if (UInt64.TryParse(counter.Text("DiskReadBytesPersec"),out read)&&UInt64.TryParse(counter.Text("DiskWriteBytesPersec"),out write)&&
+                        UInt64.TryParse(counter.Text("Timestamp_PerfTime"),out clock)&&UInt64.TryParse(counter.Text("Frequency_PerfTime"),out frequency))
+                        transfer=writeHistory.Sample(historyId.Length>0?historyId:"session:"+v.Text("letter"),read,write,clock,frequency,driveSampleTime);
+                }
+                foreach(var value in transfer)copy[value.Key]=value.Value;
                 try { var di = new DriveInfo(v.Text("letter")); copy["freeGB"] = di.TotalFreeSpace / 1073741824.0; copy["usedGB"] = (di.TotalSize - di.TotalFreeSpace) / 1073741824.0; copy["loadPercent"] = 100.0 * (di.TotalSize - di.TotalFreeSpace) / di.TotalSize; } catch { }
                 return copy;
             }).ToArray();
+            writeHistory.Checkpoint(driveSampleTime);
             var result = Data.Of("cpu", cpuNow, "gpu", gpuNow, "ram", ram, "drives", drives, "fans", fans.ToArray(), "motherboard", board, "peripherals", peripherals.ToArray(), "network", Network(), "batteries", battery.Snapshot, "status", "live");
             result["sampledAtUtc"]=DateTime.UtcNow;result["afterburnerSensorCount"]=sensors.Count;
+            result["appWriteIo"]=appWrites.Snapshot;
             var power = sensors.FirstOrDefault(s => Query.Match(s.Text("units"), @"^(W|watts?)$") && Query.Match(s.Text("name"), @"^(whole system power|total system power|system total power|total (pc|computer) power|(psu|power supply) (output )?power|ac input power|wall power)$"));
             if (power != null) { result["systemPowerW"] = power.Number("value"); result["systemPowerKind"] = Query.Match(power.Text("name"), "whole|system total|total system") ? "whole-system" : Query.Match(power.Text("name"), "ac input|wall") ? "pc-input" : "pc-output"; }
             return result;
@@ -146,9 +174,7 @@ namespace MonitorStatsNative {
             memory = Data.Of("generation", String.Join(" / ", generations), "channelMode", channel, "stickCount", modules.Count,
                 "stickCapacitiesGB", modules.Select(m => (m.Number("Capacity") ?? 0) / 1073741824.0).ToArray(),
                 "speedMTs", speeds.Length == 1 ? speeds[0] : null, "spec", String.Join(" / ", generations) + " · " + channel);
-            peripherals = Query.Wmi("SELECT Name,PNPDeviceID,PNPClass,Manufacturer,ConfigManagerErrorCode FROM Win32_PnPEntity WHERE ConfigManagerErrorCode=0").Where(p => Query.Match(p.Text("PNPDeviceID"), @"^(USB|HID)\\") && !Query.Match(p.Text("Name"), "hub|host controller|composite|input device$|mass storage"))
-                .GroupBy(p => p.Text("Name")).Take(32).Select(g => Data.Of("name", g.Key, "manufacturer", g.First().Text("Manufacturer"), "quantity", g.Count(), "category",
-                    Query.Match(g.Key,"keyboard") ? "Keyboard" : Query.Match(g.Key,"mouse") ? "Mouse" : Query.Match(g.Key,"audio|headphone|microphone") ? "USB audio" : Query.Match(g.Key,"controller|gamepad") ? "Controller" : Query.Match(g.Key,"camera") ? "Camera" : "Other USB device")).ToList();
+            peripherals = UsbPowerInventory.Read(Query.Wmi("SELECT Name,PNPDeviceID,PNPClass,Manufacturer,ConfigManagerErrorCode FROM Win32_PnPEntity WHERE ConfigManagerErrorCode=0"));
         }
         void Storage() {
             var disks = Query.Wmi("SELECT Index,Model,MediaType,InterfaceType FROM Win32_DiskDrive");
@@ -169,6 +195,7 @@ namespace MonitorStatsNative {
                 string type = ph != null && ph.Number("BusType") == 17 ? "NVMe" : ph != null && ph.Number("MediaType") == 4 ? "SSD" : ph != null && ph.Number("MediaType") == 3 ? "HDD" : "Drive";
                 var item = Data.Of("id", letter, "letter", letter, "deviceId", index.ToString(), "name", disk == null ? letter : disk.Text("Model") + " (" + letter + ")", "type", type,
                     "totalGB", volume.Number("Size") / 1073741824, "health", ph == null ? null : ph.Number("HealthStatus") == 0 ? "Healthy" : "Attention");
+                item["writeHistoryId"]=VolumeIdentity(letter);
                 if (type == "NVMe" && index >= 0) {
                     double[] smart = MonitorStatsNvmeSmart.Read(index);
                     if (smart != null) { if (smart[0] >= 0) item["tempC"] = smart[0]; item["wearPercent"] = smart[1]; item["hostWritesTB"] = smart[2] * 512000 / 1e12; item["powerOnHours"] = smart[3]; item["health"] = smart[4] == 0 ? "Healthy (" + Math.Max(0,100-smart[1]) + "% life remaining)" : "SMART warning"; }
@@ -176,6 +203,7 @@ namespace MonitorStatsNative {
                 next.Add(item);
             }
             volumes = next;
+            writeHistory.Retain(volumes.Select(v=>v.Text("writeHistoryId").Length>0?v.Text("writeHistoryId"):"session:"+v.Text("letter")));
         }
         List<Data> Sensors() {
             var result = new List<Data>();
@@ -257,6 +285,8 @@ namespace MonitorStatsNative {
             closed = true;
             DisconnectAfterburner();
             battery.Dispose();
+            writeHistory.Dispose();
+            appWrites.Dispose();
             ForegroundMonitor.CloseRtss(); Nvml.Close();
         }
     }

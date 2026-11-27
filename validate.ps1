@@ -96,11 +96,11 @@ class Checks {
                 optionsType.GetField("Theme").SetValue(options,"fullblack");
                 canvas.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));
                 if(bitmap.GetPixel(0,0).ToArgb()!=Color.Black.ToArgb())throw new Exception("Full Black background is not black");
-                object drive=data(new object[]{"id","C:","letter","C:","name","Example long NVMe drive model (C:)","type","NVMe","usedGB",100.0,"freeGB",900.0,"totalGB",1000.0,"readKBps",0.0,"writeKBps",22.0,"health","Healthy","tempC",38.0,"wearPercent",2.0,"powerOnHours",1000.0,"hostWritesTB",15.0});
+                object drive=data(new object[]{"id","C:","letter","C:","name","Example long NVMe drive model (C:)","type","NVMe","usedGB",100.0,"freeGB",900.0,"totalGB",1000.0,"readKBps",0.0,"writeKBps",22.0,"health","Healthy","tempC",38.0,"wearPercent",2.0,"powerOnHours",1000.0,"hostWritesTB",15.0,"writes24hBytes",1234567890.0,"writes30dBytes",98765432100.0});
                 object rich=data(new object[]{"cpu",data(new object[]{"model","Example CPU","loadPercent",12.0,"powerW",20.0,"cores",new double[12]}),
                     "gpu",data(new object[]{"model","Example GPU","vramUsedGB",1.0,"vramTotalGB",8.0}),
                     "ram",data(new object[]{"spec","DDR4 - Dual channel","stickCapacitiesGB",new double[]{8,8,8,8},"stickCount",4,"totalGB",32.0}),
-                    "drives",new[]{drive,drive,drive,drive}});
+                    "drives",new[]{drive,drive,drive,drive},"appWriteIo",data(new object[]{"last24h",new[]{data(new object[]{"name","browser","bytes",1234567890.0}),data(new object[]{"name","backup","bytes",987654321.0}),data(new object[]{"name","editor","bytes",999999.0})},"last30d",new[]{data(new object[]{"name","backup","bytes",99999999999.0}),data(new object[]{"name","browser","bytes",9876543210.0}),data(new object[]{"name","editor","bytes",5555555555.0})}})});
                 canvasType.GetField("Stats").SetValue(canvas,rich);
                 object richExtra=data(new object[]{"name","Network","adapter","Example adapter","routerModel","Example router","publicIPv4","192.0.2.1","localIP","192.0.2.2","publicIPv6","2001:db8:1234:5678:abcd:efab:cdef:1234","provider","Example ISP","rxOpticalPowerDbm",-24.5,"opticalUpdatedAt","10:00","dnsResolver",data(new object[]{"name","Example DNS","country","Example","location","Example city","pingMs",10})});
                 canvasType.GetField("Extras").SetValue(canvas,richExtra);
@@ -259,9 +259,21 @@ class Checks {
             }
             Console.WriteLine("Automatic monitor consistency and offline device-name persistence passed");
             Console.WriteLine("On-demand sensor diagnostics, source labels and background option passed");
+            var usbType=assembly.GetType("MonitorStatsNative.UsbPowerInventory",true);
+            var usbRows=Array.CreateInstance(dataType,5);
+            usbRows.SetValue(data(new object[]{"Name","HID-compliant mouse","PNPClass","Mouse","PNPDeviceID",@"HID\MOUSE1"}),0);
+            usbRows.SetValue(data(new object[]{"Name","HID Keyboard Device","PNPClass","Keyboard","PNPDeviceID",@"HID\KEYBOARD1"}),1);
+            usbRows.SetValue(data(new object[]{"Name","HID-compliant vendor-defined device","PNPClass","HIDClass","PNPDeviceID",@"HID\VENDOR1"}),2);
+            usbRows.SetValue(data(new object[]{"Name","HID-compliant mouse","PNPClass","Mouse","PNPDeviceID",@"HID\MOUSE2"}),3);
+            usbRows.SetValue(data(new object[]{"Name","HID-compliant system controller","PNPClass","HIDClass","PNPDeviceID",@"HID\UNKNOWN"}),4);
+            Func<string,string> physical=id=>id.EndsWith("UNKNOWN")?null:id.EndsWith("MOUSE2")?"physical-two":"physical-one";
+            var grouped=((IEnumerable)usbType.GetMethod("Build",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,new object[]{usbRows,physical})).Cast<object>().ToArray();
+            if(grouped.Length!=1||(double?)dataType.GetMethod("Number").Invoke(grouped[0],new object[]{"quantity"})!=2)throw new Exception("Composite USB interfaces counted as separate powered peripherals");
+            if((string)dataType.GetMethod("Text").Invoke(grouped[0],new object[]{"category"})!="Mouse")throw new Exception("Physical mouse receiver was classified by its keyboard interfaces");
+            Console.WriteLine("Physical USB power inventory deduplication and separate-device counting passed");
             var newer=assembly.GetType("MonitorStatsNative.Services",true).GetMethod("IsNewer");
-            foreach(string tag in new[]{"v1.0.24","v1.0.23","v1.0.22","v1.0.21","v1.0.20","v1.0.19","v1.0.18","v1.0.17","v1.0.16","v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
-            if(!(bool)newer.Invoke(null,new object[]{"v1.0.25"}))throw new Exception("Numeric update comparison failed");
+            foreach(string tag in new[]{"v1.0.27","v1.0.26","v1.0.25","v1.0.24","v1.0.23","v1.0.22","v1.0.21","v1.0.20","v1.0.19","v1.0.18","v1.0.17","v1.0.16","v1.0.15","v1.0.14","v1.0.13","v1.0.12","v1.0.11","v1.0.10","v1.0.9","v1.0.8","v1.0.7","v1.0.6","v1.0.5","v1.0.4","invalid",""})if((bool)newer.Invoke(null,new object[]{tag}))throw new Exception("Incorrect update notification");
+            if(!(bool)newer.Invoke(null,new object[]{"v1.0.28"}))throw new Exception("Numeric update comparison failed");
             var serviceType=assembly.GetType("MonitorStatsNative.Services",true);
             var networkSnapshot=assembly.GetType("MonitorStatsNative.Telemetry",true).GetMethod("NetworkSnapshot",BindingFlags.Static|BindingFlags.NonPublic);
             var networkDelegate=typeof(Func<>).MakeGenericType(dataType);
